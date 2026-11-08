@@ -37,6 +37,10 @@ final hitomi = ComicSource.named(
       return HitomiSearchPage(keyword);
     },
     enableLanguageFilter: true,
+    // hitomi's keywords use the same tag vocabulary as e-hentai, and its
+    // search parses `female:`/`male:`/`parody:` prefixes, so the tag
+    // suggestions are usable here too (#242).
+    enableTagsSuggestions: true,
   ),
   comicPageBuilder: (context, id, cover) {
     return HitomiComicPage.fromLink(id, cover: cover);

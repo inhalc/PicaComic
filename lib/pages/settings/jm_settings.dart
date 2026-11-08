@@ -73,6 +73,108 @@ class JmSettings extends StatefulWidget {
       appdata.updateSettings();
     }
   }
+
+  /// Lets the user point the domain update at their own mirror (#226).
+  ///
+  /// The two built-in hosts are plain object storage URLs, which are exactly
+  /// what gets blocked in the networks where the update fails, so a mirror is
+  /// often the only way to refresh the domain list at all.
+  static Future<void> editUpdateUrls(BuildContext context) async {
+    var controller = TextEditingController(
+        text: appdata.appSettings.jmApiUpdateUrls.join('\n'));
+    await showDialog(
+      context: context,
+      useSafeArea: false,
+      builder: (context) => ContentDialog(
+        title: "自定义更新地址".tl,
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "留空则只使用内置地址。每行一个地址, 可以是自建镜像。".tl,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: controller,
+              maxLines: 4,
+              decoration: InputDecoration(
+                hintText: "https://example.com/newsvr.txt",
+                border: const OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ).paddingHorizontal(16),
+        actions: [
+          Button.filled(
+            child: Text("保存".tl),
+            onPressed: () {
+              appdata.appSettings.jmApiUpdateUrls =
+                  parseJmUpdateUrlInput(controller.text);
+              appdata.updateSettings();
+              context.pop();
+            },
+          )
+        ],
+      ),
+    );
+  }
+
+  /// Lets the user type the API domains instead of downloading them (#226).
+  static Future<void> editApiDomains(BuildContext context) async {
+    var controller = TextEditingController(
+        text: appdata.appSettings.jmApiDomains.join('\n'));
+    await showDialog(
+      context: context,
+      useSafeArea: false,
+      builder: (context) => ContentDialog(
+        title: "手动设置API域名".tl,
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "每行一个域名, 不带 https:// 。第一行为分流1, 依次类推。".tl,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: controller,
+              maxLines: 5,
+              decoration: InputDecoration(
+                hintText: "www.example.org",
+                border: const OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ).paddingHorizontal(16),
+        actions: [
+          Button.filled(
+            child: Text("保存".tl),
+            onPressed: () {
+              final domains = parseJmDomainInput(controller.text);
+              if (domains.isEmpty) {
+                showToast(message: "域名不能为空".tl);
+                return;
+              }
+              appdata.appSettings.jmApiDomains = domains;
+              // The selected index must stay inside the new list, otherwise
+              // every request would throw on `domains[index]`.
+              final selected = int.tryParse(appdata.settings[17]);
+              if (selected == null || selected >= domains.length) {
+                appdata.settings[17] = "0";
+              }
+              appdata.updateSettings();
+              updateAppVersionCode();
+              JmNetwork().loginFromAppdata();
+              context.pop();
+            },
+          )
+        ],
+      ),
+    );
+  }
 }
 
 class _JmSettingsState extends State<JmSettings> {
@@ -157,6 +259,20 @@ class _JmSettingsState extends State<JmSettings> {
           leading: const Icon(Icons.update_outlined),
           title: Text("更新API域名".tl),
           onTap: () => JmSettings.updateApiDomains(true),
+          trailing: const Icon(Icons.arrow_right),
+        ),
+        ListTile(
+          leading: const Icon(Icons.cloud_sync_outlined),
+          title: Text("自定义更新地址".tl),
+          subtitle: Text("内置地址不可达时使用".tl),
+          onTap: () => JmSettings.editUpdateUrls(context),
+          trailing: const Icon(Icons.arrow_right),
+        ),
+        ListTile(
+          leading: const Icon(Icons.dns_outlined),
+          title: Text("手动设置API域名".tl),
+          subtitle: Text("无法更新域名时直接填写".tl),
+          onTap: () => JmSettings.editApiDomains(context),
           trailing: const Icon(Icons.arrow_right),
         ),
         ListTile(

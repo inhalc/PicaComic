@@ -127,6 +127,7 @@ class Appdata {
     "2.0.11", //89 jm app version
     "0", //90 (deprecated) 旧版 GIF 开关, 保留以兼容已导出的用户数据
     "0", //91 阅读器中仅显示 GIF 首帧: 1-静态首帧, 0-降载播放动画
+    "", //92 自定义禁漫域名更新地址, 逗号分隔; 为空表示只用内置地址
   ];
 
   /// 隐式数据, 用于存储一些不需要用户设置的数据, 此数据通常为某些组件的状态, 此设置不应当被同步
@@ -484,6 +485,16 @@ class _Settings {
 
   set jmApiDomains(List<String> domains) {
     appdata.settings[85] = domains.join(',');
+  }
+
+  /// Extra URLs tried before the built-in ones when updating the JM domain
+  /// list (#226). Lets a user point the update at a mirror of their own when
+  /// the built-in hosts are unreachable.
+  List<String> get jmApiUpdateUrls =>
+      appdata.settings[92].split(',').where((e) => e.isNotEmpty).toList();
+
+  set jmApiUpdateUrls(List<String> urls) {
+    appdata.settings[92] = urls.join(',');
   }
 
   String get jmImgUrlIndex =>

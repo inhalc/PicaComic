@@ -10,6 +10,7 @@ import 'package:pica_comic/pages/search_result_page.dart';
 import 'package:pica_comic/tools/app_links.dart';
 import 'package:pica_comic/tools/extensions.dart';
 import 'package:pica_comic/tools/tags_translation.dart';
+import 'package:pica_comic/tools/hitomi_query.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'package:sliver_tools/sliver_tools.dart';
 
@@ -389,6 +390,11 @@ class PreSearchPage extends StatelessWidget {
                 ["male", "female", "language"].contains(type?.name)) {
               text = text.replaceAll(" ", '_');
               text = "${type?.name}:$text";
+            } else if (logic.target == 'hitomi') {
+              // hitomi splits the query on whitespace and has no quoted phrase
+              // syntax, so `"big breasts"` would search for `"big` and
+              // `breasts"` and find nothing (#242).
+              text = hitomiSuggestionTerm(text, type?.name);
             } else {
               text = "\"$text\"";
             }

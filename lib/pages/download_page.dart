@@ -187,13 +187,35 @@ class DownloadPageLogic extends StateController {
       comics.addAll(baseComics);
     } else {
       for (var element in baseComics) {
-        if (element.name.toLowerCase().contains(keyword) ||
-            element.subTitle.toLowerCase().contains(keyword)) {
+        if (_matches(element)) {
           comics.add(element);
         }
       }
     }
     resetSelected(comics.length);
+  }
+
+  /// Whether a downloaded comic matches [keyword].
+  ///
+  /// Tags are searched too (#108): after a few hundred downloads the title is
+  /// no longer enough to find something, and the tag is what the user actually
+  /// remembers. Both the raw tag and its Chinese translation are matched, so
+  /// searching "巨乳" finds the gallery tagged `big breasts`.
+  bool _matches(DownloadedItem item) {
+    if (item.name.toLowerCase().contains(keyword) ||
+        item.subTitle.toLowerCase().contains(keyword)) {
+      return true;
+    }
+    for (final tag in item.tags) {
+      if (tag.toLowerCase().contains(keyword)) {
+        return true;
+      }
+      final translated = tag.translateTagsToCN;
+      if (translated != tag && translated.toLowerCase().contains(keyword)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @override

@@ -195,7 +195,13 @@ class JmNetwork {
   }
 
   Future<Res<dynamic>> getApiDomains() async {
-    for(String url in domainUrls) {
+    // User-provided mirrors first: the built-in hosts are exactly what tends to
+    // be unreachable in the networks this setting exists for (#226).
+    final urls = <String>[
+      ...appdata.appSettings.jmApiUpdateUrls,
+      ...domainUrls,
+    ];
+    for (String url in urls) {
       var domains = await tryFetchAndDecrypt(url);
       if (domains.isNotEmpty) {
         return Res(domains);
