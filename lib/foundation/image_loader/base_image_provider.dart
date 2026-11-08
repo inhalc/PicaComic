@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:pica_comic/foundation/cache_manager.dart';
 import 'package:pica_comic/foundation/image_manager.dart';
+import 'package:pica_comic/foundation/log.dart';
 import 'package:pica_comic/tools/image_integrity.dart';
 
 /// Internal signal used when an image stream is cancelled before decoding
@@ -54,19 +55,43 @@ class ImageDecodeConfig {
   /// hundreds of them and starve the UI isolate.
   static const int maxActiveAnimations = 12;
 
+  /// When true, every animation writes its measured fps and average decode
+  /// cost to the app log. Enabled with
+  /// `flutter build apk --dart-define=IMAGE_STATS=true`; normal builds pay
+  /// nothing and stay silent.
+  static const bool logStats = bool.fromEnvironment('IMAGE_STATS');
+
   /// Compute the minimum interval for the next frame.
   ///
-  /// Small GIFs play at their authored speed. Large or slow-to-decode frames
-  /// get a higher floor so decoding never takes more than roughly half of the
-  /// UI isolate's time - the original "whole app freezes after a GIF" issue.
-  static int frameFloorMs(int framePixels, int lastDecodeMs) {
+  /// Small GIFs play at their authored speed. Large frames get a higher
+  /// baseline so a 1080p+ animation cannot monopolise the raster thread.
+  ///
+  /// [lastDecodeMs] is only used to protect the UI isolate when decoding
+  /// actually threatens the file's own frame budget. The previous formula was
+  /// `lastDecodeMs * 2`, which slowed every animation down as soon as a single
+  /// decode took more than half of its budget: a 32 fps animated WebP
+  /// (31 ms/frame) that decoded in 16 ms was played at 25 fps or worse even
+  /// though the decode fitted comfortably. That is why "GIFs look choppy"
+  /// kept coming back. Now the authored delay is honoured until decoding
+  /// consumes ~70% of the budget, and even then the floor is only
+  /// `decode + 4 ms`, just enough to keep the pipeline from falling behind.
+  static int frameFloorMs(
+    int framePixels,
+    int lastDecodeMs, {
+    int declaredDelayMs = 0,
+  }) {
     final sizeFloor = framePixels >= 6000000
         ? 40
         : framePixels >= 2000000
             ? 25
             : minFrameIntervalMs;
-    final decodeFloor =
-        (lastDecodeMs * 2).clamp(0, maxAdaptiveFrameIntervalMs).toInt();
+    final budget =
+        declaredDelayMs > 0 ? declaredDelayMs : minFrameIntervalMs;
+    // Integer arithmetic keeps this deterministic in unit tests.
+    final overBudget = lastDecodeMs * 10 >= budget * 7;
+    final decodeFloor = overBudget
+        ? (lastDecodeMs + 4).clamp(0, maxAdaptiveFrameIntervalMs).toInt()
+        : 0;
     return sizeFloor > decodeFloor ? sizeFloor : decodeFloor;
   }
 
@@ -192,6 +217,10 @@ class ThrottledImageStreamCompleter extends ImageStreamCompleter {
       final repetitionCount = codec.repetitionCount;
       var lastDecodeMs = 0;
       var offscreenElapsedMs = 0;
+      // Playback telemetry, only compiled in when IMAGE_STATS is defined.
+      var statFrames = 0;
+      var statDecodeMs = 0;
+      var statWindowStart = 0;
       // Schedule against a monotonic timeline. Sleeping a fixed interval
       // *after* each decode adds the decode time on top of the frame delay,
       // which is exactly what made the old fixed-throttle playback drift and
@@ -199,8 +228,11 @@ class ThrottledImageStreamCompleter extends ImageStreamCompleter {
       final clock = Stopwatch()..start();
       var nextFrameAt = 0;
       while (!_stopped) {
-        final floorMs =
-            ImageDecodeConfig.frameFloorMs(framePixels, lastDecodeMs);
+        final floorMs = ImageDecodeConfig.frameFloorMs(
+          framePixels,
+          lastDecodeMs,
+          declaredDelayMs: nextDelayMs,
+        );
         final interval = _clampFrameDelay(nextDelayMs, floorMs);
         nextFrameAt += interval;
         final waitMs = nextFrameAt - clock.elapsedMilliseconds;
@@ -235,6 +267,28 @@ class ThrottledImageStreamCompleter extends ImageStreamCompleter {
         nextDelayMs = frame.duration.inMilliseconds;
         _emit(frame);
         emitted++;
+        if (ImageDecodeConfig.logStats) {
+          statFrames++;
+          statDecodeMs += lastDecodeMs;
+          if (statWindowStart == 0) {
+            statWindowStart = clock.elapsedMilliseconds;
+          }
+          final window = clock.elapsedMilliseconds - statWindowStart;
+          if (window >= 2000) {
+            LogManager.addLog(
+              LogLevel.info,
+              "ImageDecode",
+              "fps=${(statFrames * 1000 / window).toStringAsFixed(1)} "
+                  "decode_avg=${(statDecodeMs / statFrames).toStringAsFixed(1)}ms "
+                  "decode_last=${lastDecodeMs}ms interval=${interval}ms "
+                  "declared=${frame.duration.inMilliseconds}ms "
+                  "pixels=$framePixels codecFrames=${codec.frameCount}",
+            );
+            statFrames = 0;
+            statDecodeMs = 0;
+            statWindowStart = 0;
+          }
+        }
         if (repetitionCount >= 0 &&
             emitted >= (repetitionCount + 1) * codec.frameCount) {
           break;

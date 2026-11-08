@@ -72,10 +72,26 @@ void main() {
     expect(ImageDecodeConfig.frameFloorMs(3000000, 0), 25);
     expect(ImageDecodeConfig.frameFloorMs(8000000, 0), 40);
     // Expensive decodes are throttled to keep the UI isolate responsive...
-    expect(ImageDecodeConfig.frameFloorMs(1000, 30), 60);
+    expect(ImageDecodeConfig.frameFloorMs(1000, 30), 34);
     // ...but never beyond the adaptive ceiling.
     expect(ImageDecodeConfig.frameFloorMs(1000, 100),
         ImageDecodeConfig.maxAdaptiveFrameIntervalMs);
+  });
+
+  test('a 32 fps page keeps its authored speed when decode fits the budget',
+      () {
+    // 800x1024 animated WebP at 31 ms/frame. The old *2 rule turned a 18 ms
+    // decode into a 36 ms floor (27 fps) even though it fitted comfortably.
+    expect(
+      ImageDecodeConfig.frameFloorMs(800 * 1024, 18, declaredDelayMs: 31),
+      ImageDecodeConfig.minFrameIntervalMs,
+    );
+    // 25 ms of a 31 ms budget (81%) does threaten playback: raise the floor
+    // only to decode + margin, never to double the decode time.
+    expect(ImageDecodeConfig.frameFloorMs(800 * 1024, 25, declaredDelayMs: 31),
+        29);
+    // A fast file with a tiny delay is still protected from decode hogging.
+    expect(ImageDecodeConfig.frameFloorMs(1000, 12, declaredDelayMs: 10), 16);
   });
 
   test('first frame is emitted even when animation is disabled', () async {
