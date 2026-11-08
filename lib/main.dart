@@ -19,6 +19,7 @@ import 'package:pica_comic/pages/welcome_page.dart';
 import 'package:pica_comic/tools/block_screenshot.dart';
 import 'package:pica_comic/tools/mouse_listener.dart';
 import 'package:pica_comic/tools/tags_translation.dart';
+import 'package:pica_comic/tools/ui_state.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'components/components.dart';
@@ -252,10 +253,17 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                   LogicalKeySet(LogicalKeyboardKey.escape):
                   VoidCallbackIntent(
                         () {
-                      if (App.canPop) {
-                        App.globalBack();
-                      } else {
-                        App.mainNavigatorKey?.currentContext?.pop();
+                      final mainNav = App.mainNavigatorKey?.currentState;
+                      final rootCanPop = App.canPop;
+                      final mainCanPop = mainNav?.canPop() ?? false;
+                      if (shouldPopOnEscape(
+                          rootCanPop: rootCanPop,
+                          mainCanPop: mainCanPop)) {
+                        if (rootCanPop) {
+                          App.globalBack();
+                        } else {
+                          mainNav!.pop();
+                        }
                       }
                     },
                   ),

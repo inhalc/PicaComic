@@ -10,6 +10,7 @@ import 'package:pica_comic/foundation/pair.dart';
 import 'package:pica_comic/network/base_comic.dart';
 import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/tools/extensions.dart';
+import 'package:pica_comic/tools/issue_parsers.dart';
 import 'package:pica_comic/tools/tags_translation.dart';
 import 'package:pica_comic/tools/translations.dart';
 
@@ -112,17 +113,15 @@ class _SearchResultPageState extends State<_SearchResultPage> {
   late var sourceKey = widget.sourceKey;
   late var options = widget.options;
 
+  bool get _enableLangFilter =>
+      ComicSource.find(sourceKey)?.searchPageData?.enableLanguageFilter == true;
+
+  int get _langSetting => int.tryParse(appdata.settings[69]) ?? 0;
+
   @override
   void initState() {
     controller.text = keyword.trim();
-    if (!keyword.contains('language') &&
-        ComicSource.find(sourceKey)?.searchPageData?.enableLanguageFilter ==
-            true) {
-      var lang = int.tryParse(appdata.settings[69]) ?? 0;
-      if (lang != 0) {
-        keyword += " language:${["chinese", "english", "japanese"][lang - 1]}";
-      }
-    }
+    keyword = applyAutoLanguage(keyword, _enableLangFilter, _langSetting);
     suggestionsController = _SuggestionsController(controller);
     super.initState();
   }
@@ -164,9 +163,11 @@ class _SearchResultPageState extends State<_SearchResultPage> {
   }
 
   void update() {
-    if (controller.text != keyword) {
+    var newKeyword =
+        applyAutoLanguage(controller.text, _enableLangFilter, _langSetting);
+    if (newKeyword != keyword) {
       setState(() {
-        keyword = controller.text;
+        keyword = newKeyword;
       });
     }
   }
@@ -205,7 +206,7 @@ class _SearchResultPageState extends State<_SearchResultPage> {
               onPressed: () {
                 var s = controller.text;
                 setState(() {
-                  keyword = s;
+                  keyword = applyAutoLanguage(s, _enableLangFilter, _langSetting);
                 });
               },
             )
@@ -242,9 +243,11 @@ class _SearchResultPageState extends State<_SearchResultPage> {
                 onSearch: (s) {
                   suggestionsController.suggestions.clear();
                   suggestionsController.remove();
-                  if (s == keyword) return;
+                  var newKeyword =
+                      applyAutoLanguage(s, _enableLangFilter, _langSetting);
+                  if (newKeyword == keyword) return;
                   setState(() {
-                    keyword = s;
+                    keyword = newKeyword;
                   });
                 },
                 controller: controller,
@@ -327,9 +330,14 @@ class _SearchResultPageState extends State<_SearchResultPage> {
                         .map((e) => e.defaultValue)
                         .toList();
                     if (searchData.overrideSearchResultBuilder != null) {
+                      var newKeyword = applyAutoLanguage(
+                        keyword,
+                        searchData.enableLanguageFilter == true,
+                        _langSetting,
+                      );
                       this.context.off(() {
                         return SearchResultPage(
-                          keyword: keyword,
+                          keyword: newKeyword,
                           options: options,
                           sourceKey: sourceKey!,
                         );

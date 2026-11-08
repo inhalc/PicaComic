@@ -25,6 +25,8 @@ class ComicsPageLogic<T> extends StateController {
 
   void get(Future<Res<List<T>>> Function(int) getComics) async {
     if (loadingData) return;
+    // An explicit reload re-enables "load more" after a transient error.
+    _autoLoadPaused = false;
     loadingData = true;
     Future.microtask(() => update());
     if (comics == null) {
@@ -60,34 +62,54 @@ class ComicsPageLogic<T> extends StateController {
 
   int _emptyPageCount = 0;
 
+  /// #169: a failed "load more" must NOT set [message] — a non-null message
+  /// turns the whole (already populated) list into an error page. Pause the
+  /// automatic loading instead, and resume on an explicit reload in [get].
+  bool _autoLoadPaused = false;
+
   void loadNextPage(Future<Res<List<T>>> Function(int) getComics) async {
-    if (maxPage != null && current >= maxPage!) return;
+    // 分页推进规则集中在纯类 PaginationState 里 (#169)：只有成功且非空才推进
+    // current；连续空页无条件收敛（不再依赖 maxPage == null）。
+    final state = PaginationState(
+      current: current,
+      maxPage: maxPage,
+      emptyPageCount: _emptyPageCount,
+    );
+    if (_autoLoadPaused || !state.canRequestNext) return;
     if (loadingData) return;
     loadingData = true;
     Future.microtask(() => update());
-    var res = await getComics(current + 1);
+
+    final res = await getComics(current + 1);
     if (res.error) {
-      showToast(message: res.errorMessage!);
-    } else {
-      if (res.subData is int) {
-        maxPage = res.subData;
-      }
-      if (res.data.isEmpty) {
-        _emptyPageCount++;
-        if (_emptyPageCount > 3 && maxPage == null) {
-          // 某些漫画源不会返回总页数, 而app的网络代码会根据用户设置进行屏蔽操作
-          // 空页面既可能是因为没有更多页面, 也可能是因为被屏蔽了
-          // 如果连续3次加载空页面, 则认为已经加载完毕
-          maxPage = current;
-        }
-        // 等待一会儿再加载, 避免因为某些错误导致无限加载
-        await Future.delayed(const Duration(seconds: 1));
-      } else {
-        _emptyPageCount = 0;
-        comics!.addAll(res.data);
-      }
+      _autoLoadPaused = true;
+      showToast(message: res.errorMessage ?? "Network Error");
+      loadingData = false;
+      update();
+      return;
     }
-    current++;
+
+    final outcome = res.data.isEmpty
+        ? PageLoadOutcome.emptyPage
+        : PageLoadOutcome.successNonEmpty;
+    state.applyResult(
+      outcome: outcome,
+      serverMaxPage: res.subData is int ? res.subData as int : null,
+      emptyPageThreshold: 2,
+    );
+
+    // 只同步分页字段；message 属于首屏错误状态，不在这里改。
+    current = state.current;
+    maxPage = state.maxPage;
+    _emptyPageCount = state.emptyPageCount;
+
+    if (outcome == PageLoadOutcome.successNonEmpty) {
+      comics!.addAll(res.data);
+    } else if (!state.stopped) {
+      // 空页稍作等待，避免 rebuild 立刻触发下一次请求。
+      await Future.delayed(const Duration(seconds: 1));
+    }
+
     loadingData = false;
     update();
   }

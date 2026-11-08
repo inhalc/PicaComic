@@ -16,6 +16,7 @@ import 'package:pica_comic/network/eh_network/get_gallery_id.dart';
 import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/pages/pre_search_page.dart';
 import 'package:pica_comic/tools/extensions.dart';
+import 'package:pica_comic/tools/issue_parsers.dart';
 import 'package:pica_comic/tools/js.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -469,22 +470,26 @@ class EhNetwork {
 
       //获取收藏夹名称
       if (favoritePage && ehentai.isLogin) {
-        var names = <String>[];
         try {
           var folderDivs = document.querySelectorAll("div.fp");
+          // 保持原有「名称 (数量)」拼装方式；名称仍优先取第 3 个子节点，
+          // 取不到时再退到最后一个子节点/整段文本，避免页面结构微调后
+          // 全部退化成硬编码的 "Favorite N" (#39)。
+          var rawNames = <String>[];
           for (var folderDiv in folderDivs) {
-            var name = folderDiv.children.elementAtOrNull(2)?.text ??
-                "Favorite ${names.length}";
-            var length = folderDiv.children.elementAtOrNull(0)?.text;
+            final children = folderDiv.children;
+            var name = children.elementAtOrNull(2)?.text ??
+                (children.isNotEmpty ? children.last.text : folderDiv.text);
+            var length = children.elementAtOrNull(0)?.text;
             if (length != null) {
               length = " ($length)";
             }
             length ??= "";
-            names.add("$name$length");
+            rawNames.add("$name$length");
           }
-          if (names.length != 10) {
-            names = names.sublist(0, 10);
-          }
+          // 纯函数保证恰好 10 项：不足补齐、超过截断，不再因 sublist 越界
+          // 抛 RangeError 而被下面的 catch 静默吞掉 (#39)。
+          var names = parseFavoriteNames(rawNames);
           bool isSame = true;
           if (folderNames.length == names.length) {
             for (int i = 0; i < folderNames.length; i++) {
@@ -502,7 +507,7 @@ class EhNetwork {
             ehentai.saveData();
           }
         } catch (e) {
-          //忽视
+          LogManager.addLog(LogLevel.error, "Data Analysis", "$e");
         }
         return Res(g, subData: folderNames);
       }

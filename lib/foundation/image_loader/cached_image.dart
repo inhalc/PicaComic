@@ -42,7 +42,10 @@ class CachedImageProvider
       );
     }
 
-    if(finishProgress!.data != null){
+    if (finishProgress == null) {
+      throw StateError('image stream ended without completion event');
+    }
+    if (finishProgress.data != null) {
       return finishProgress.data!;
     }
 

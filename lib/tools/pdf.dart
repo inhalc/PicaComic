@@ -4,6 +4,7 @@ import 'dart:isolate';
 import 'package:flutter/services.dart';
 import 'package:pdf/widgets.dart';
 import 'package:pica_comic/foundation/app.dart';
+import 'package:pica_comic/tools/ui_state.dart';
 
 Future<void> createPdfFromComic({
   required String title,
@@ -22,7 +23,7 @@ Future<void> createPdfFromComic({
   );
 
   // add cover
-  var imageData = File("$comicPath/cover.jpg").readAsBytesSync();
+  var imageData = await File("$comicPath/cover.jpg").readAsBytes();
   pdf.addPage(Page(
     build: (Context context) {
       return Column(
@@ -48,29 +49,18 @@ Future<void> createPdfFromComic({
       || File("$comicPath/0.jpeg").existsSync()
       || File("$comicPath/0.gif").existsSync());
 
-  void reorderFiles(List<FileSystemEntity> files) {
-    files.removeWhere((element) =>
-    element is! File ||
-        element.path.contains('info.json') ||
-        element.path.contains('cover.jpg') ||
-        element.path.contains('cover.png') ||
-        element.path.contains('cover.webp') ||
-        element.path.contains('cover.jpeg'));
-    files.sort((a, b) {
-      var aName = (a as File).path.replaceAll('\\', '/').split("/").last;
-      var bName = (b as File).path.replaceAll('\\', '/').split("/").last;
-      var aIndex = int.parse(aName.split(".").first);
-      var bIndex = int.parse(bName.split(".").first);
-      return aIndex.compareTo(bIndex);
-    });
+  // 排序/过滤交给纯函数，避免 .DS_Store、Thumbs.db 或任何非数字文件名
+  // 触发 int.parse 的 FormatException 导致导出失败 (#53)。
+  List<File> reorderFiles(List<FileSystemEntity> files) {
+    final paths = files.whereType<File>().map((e) => e.path).toList();
+    return reorderImagePaths(paths).map((p) => File(p)).toList();
   }
 
   if(!multiChapters){
     var files = Directory(comicPath).listSync();
-    reorderFiles(files);
 
-    for (var file in files){
-      var imageData = (file as File).readAsBytesSync();
+    for (var file in reorderFiles(files)){
+      var imageData = await file.readAsBytes();
       pdf.addPage(Page(
         build: (Context context) {
           return Image(MemoryImage(imageData), fit: BoxFit.contain);
@@ -91,10 +81,9 @@ Future<void> createPdfFromComic({
       ));
 
       var files = directory.listSync();
-      reorderFiles(files);
 
-      for (var file in files){
-        var imageData = (file as File).readAsBytesSync();
+      for (var file in reorderFiles(files)){
+        var imageData = await file.readAsBytes();
         pdf.addPage(Page(
           build: (Context context) {
             return Image(MemoryImage(imageData), fit: BoxFit.contain);
@@ -105,7 +94,7 @@ Future<void> createPdfFromComic({
   }
 
   final file = File(savePath);
-  file.writeAsBytesSync(await pdf.save());
+  await file.writeAsBytes(await pdf.save());
 }
 
 Future<void> createPdfFromComicWithIsolate({

@@ -11,6 +11,7 @@ import "package:pica_comic/foundation/local_favorites.dart";
 import "package:pica_comic/foundation/log.dart";
 import "package:pica_comic/network/download.dart";
 import "package:pica_comic/tools/translations.dart";
+import "package:pica_comic/tools/ui_state.dart";
 
 import "../../network/net_fav_to_local.dart";
 import "../../tools/io_tools.dart";
@@ -34,21 +35,12 @@ class FavoritesPageController extends StateController {
   bool get isSelectingComics => selectedComics.isNotEmpty;
 
   FavoritesPageController() {
-    var data = appdata.implicitData[0].split(";");
-    selectingFolder = data[0] == "1";
-    if (data[1] == "") {
-      isNetwork = null;
-    } else {
-      isNetwork = data[1] == "1";
-    }
-    if (data.length > 3) {
-      current = data.sublist(2).join(";");
-    } else {
-      current = data[2];
-    }
-    if (current == "") {
-      current = null;
-    }
+    // 纯函数解析三态：绝不产生 current 非空而 isNetwork 为 null 的危险组合，
+    // 并对字段缺失做兜底，避免 buildContent 里的 `isNetwork!` 崩溃 (#252)。
+    final parsed = parseFavoritesPageState(appdata.implicitData[0]);
+    selectingFolder = parsed.selectingFolder;
+    isNetwork = parsed.isNetwork;
+    current = parsed.current;
     if (isNetwork ?? false) {
       final folders =
           appdata.settings[68].split(',').map((e) => getFavoriteDataOrNull(e));
@@ -119,6 +111,10 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
   }
 
   void multiSelectedMenu() {
+    final current = controller.current;
+    if (current == null) return;
+    // 局部非空值，避免各处 `current!`；闭包里使用显式 String，无需依赖提升。
+    final String folder = current;
     final size = MediaQuery.of(App.globalContext!).size;
     showMenu(
         context: App.globalContext!,
@@ -128,7 +124,7 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
             child: Text("删除".tl),
             onTap: () {
               for (var comic in controller.selectedComics) {
-                LocalFavoritesManager().deleteComic(controller.current!, comic);
+                LocalFavoritesManager().deleteComic(folder, comic);
               }
               controller.selectedComics.clear();
               controller.update();
@@ -139,7 +135,7 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
             onTap: () {
               Future.delayed(
                 const Duration(milliseconds: 200),
-                () => copyAllTo(controller.current!, controller.selectedComics),
+                () => copyAllTo(folder, controller.selectedComics),
               );
             },
           ),
@@ -165,7 +161,7 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
                 const Duration(milliseconds: 200),
                 () {
                   var comics = controller.selectedComics;
-                  UpdateFavoritesInfoDialog.show(comics, controller.current!);
+                  UpdateFavoritesInfoDialog.show(comics, folder);
                 },
               );
             },
@@ -200,8 +196,10 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
               child: IconButton(
                 icon: const Icon(Icons.select_all),
                 onPressed: () {
+                  final folder = controller.current;
+                  if (folder == null) return;
                   controller.selectedComics = LocalFavoritesManager()
-                      .getAllComics(controller.current!)
+                      .getAllComics(folder)
                       .toList();
                   controller.update();
                 },
@@ -263,7 +261,7 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
                 Icons.folder_outlined,
                 color: iconColor,
               )
-            else if (controller.isNetwork!)
+            else if (controller.isNetwork == true)
               Icon(
                 Icons.folder_special,
                 color: iconColor,
@@ -277,7 +275,7 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
               width: 8,
             ),
             Text(
-              controller.current != null ? controller.current!.tl : "未选择".tl,
+              (controller.current ?? "未选择").tl,
               style: const TextStyle(fontSize: 16),
             ).paddingBottom(3),
             const Spacer(),
@@ -470,18 +468,26 @@ class FavoritesPage extends StatelessWidget with _LocalFavoritesManager {
   }
 
   Widget buildContent(BuildContext context) {
-    if (controller.current == null) {
+    // 显式处理 isNetwork 三态：null 兜底为本地，current 用局部判空，
+    // 不再使用 `isNetwork!` / `current!` (#252)。
+    final folder = controller.current;
+    if (folder == null) {
       return const SizedBox();
-    } else if (controller.isNetwork!) {
+    }
+    if (controller.isNetwork ?? false) {
+      final networkData = controller.networkData;
+      if (networkData == null) {
+        return const SizedBox();
+      }
       return NetworkFavoritePage(
-        controller.networkData!,
-        key: Key(controller.current ?? ""),
+        networkData,
+        key: Key(folder),
       );
     } else {
-      var count = LocalFavoritesManager().count(controller.current!);
+      var count = LocalFavoritesManager().count(folder);
       return ComicsPageView(
-        key: Key(controller.current! + count.toString()),
-        folder: controller.current!,
+        key: Key(folder + count.toString()),
+        folder: folder,
         selectedComics: controller.selectedComics,
         onClick: (key) {
           if (controller.isSelectingComics) {
@@ -620,7 +626,7 @@ mixin class _LocalFavoritesManager {
       App.globalBack();
       LocalFavoritesManager().deleteFolder(folder);
       final controller = StateController.find<FavoritesPageController>();
-      if (controller.current == folder && !controller.isNetwork!) {
+      if (controller.current == folder && controller.isNetwork == false) {
         controller.current = null;
         controller.isNetwork = null;
       }

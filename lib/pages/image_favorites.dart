@@ -279,7 +279,10 @@ class _ImageProvider extends BaseImageProvider<_ImageProvider> {
             cumulativeBytesLoaded: progress.currentBytes,
             expectedTotalBytes: progress.expectedBytes));
       }
-      var file = finishProgress!.getFile();
+      if (finishProgress == null) {
+        throw StateError('image stream ended without completion event');
+      }
+      var file = finishProgress.getFile();
       var data = await file.readAsBytes();
       var file2 = File("${App.dataPath}/images/${image.imagePath}");
       if (!file2.existsSync()) {

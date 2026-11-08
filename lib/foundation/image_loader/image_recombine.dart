@@ -43,12 +43,11 @@ Future<Uint8List> _segmentationPicture(_RecombinationTask data) async {
   if (num <= 1) {
     return data.imgData;
   }
-  image.Image srcImg;
-  try {
-    srcImg = image.decodeImage(data.imgData)!;
-  }
-  catch(e){
-    throw Exception("Failed to decode image: Data length is ${data.imgData.length} bytes");
+  final srcImg = image.decodeImage(data.imgData);
+  if (srcImg == null) {
+    throw Exception(
+        "Failed to decode image: unrecognized or corrupted image data, "
+        "Data length is ${data.imgData.length} bytes");
   }
 
   int blockSize = (srcImg.height / num).floor();

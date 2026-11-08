@@ -584,6 +584,8 @@ class ImageManager {
 
       var bytes = <int>[];
       String? ext;
+      int? expectedBytes;
+      String? contentType;
       try {
         var res = await dio.get<ResponseBody>(
             url,
@@ -593,6 +595,10 @@ class ImageManager {
             )
         );
         ext = getExt(res);
+        contentType =
+            (res.headers["Content-Type"] ?? res.headers["content-type"])?[0];
+        final contentLength = res.data!.contentLength;
+        expectedBytes = contentLength == -1 ? null : contentLength;
         var stream = res.data!.stream;
         await for (var b in stream) {
           //不直接写入文件, 因为需要对图片进行重组, 处理完成后再写入
@@ -614,6 +620,15 @@ class ImageManager {
       );
       yield progress;
       loadingItems[urlWithoutParam] = progress;
+      // A 124-byte HTTP-200 error page (JM anti-scraping) is length-consistent,
+      // so checkImageComplete alone cannot catch it. Reject short/bogus
+      // payloads before handing bytes to the recombine isolate (#93).
+      checkImageComplete(bytes.length, expectedBytes, url);
+      final payloadError = imagePayloadError(bytes, contentType: contentType);
+      if (payloadError != null) {
+        throw Exception('Invalid JM image payload: $payloadError '
+            '(length: ${bytes.length}, Content-Type: $contentType, url: $url)');
+      }
       if (url.split('.').last != "gif") {
         bytes = await startRecombineAndWriteImage(
             Uint8List.fromList(bytes), epsId, scrambleId, bookId, savePath);

@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:pica_comic/foundation/cache_manager.dart';
 import 'package:pica_comic/foundation/image_manager.dart';
+import 'package:pica_comic/tools/image_integrity.dart';
 
 /// Internal signal used when an image stream is cancelled before decoding
 /// finishes (a page scrolled away, or the reader was closed). This is normal
@@ -414,6 +415,21 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
               bytes = await load(chunkEvents);
             } finally {
               _releaseLoadSlot();
+            }
+            // Validate the exact bytes that will be decoded. Custom comic
+            // sources may rewrite the downloaded bytes via an onResponse hook
+            // inside the ImageManager stream; load() only consumes that stream
+            // and returns the already-rewritten final buffer, so this check
+            // always runs *after* onResponse and cannot reject a legitimately
+            // transformed image (issue #93).
+            final payloadError = imagePayloadError(bytes);
+            if (payloadError != null) {
+              // Drop both cache tiers so the retry loop below re-downloads
+              // instead of decoding the same HTML/JSON error page forever.
+              _cache.remove(key.key);
+              await CacheManager().delete(key.key);
+              throw Exception('Invalid image payload for $key: $payloadError '
+                  '(length: ${bytes.length})');
             }
             _cache[key.key] = bytes;
             _cacheSize += bytes.length;

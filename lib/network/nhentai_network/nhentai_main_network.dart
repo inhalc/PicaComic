@@ -9,6 +9,7 @@ import 'package:pica_comic/network/cookie_jar.dart';
 import 'package:pica_comic/network/nhentai_network/tags.dart';
 import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/tools/extensions.dart';
+import 'package:pica_comic/tools/issue_parsers.dart';
 import 'package:pica_comic/tools/time.dart';
 import 'package:pica_comic/tools/translations.dart';
 import 'package:pica_comic/pages/pre_search_page.dart';
@@ -190,8 +191,7 @@ class NhentaiNetwork {
 
       var lastPagination = document
           .querySelector("section.pagination > a.last")
-          ?.attributes["href"]
-          ?.nums;
+          ?.attributes["href"];
 
       Future.microtask(() {
         try {
@@ -208,7 +208,7 @@ class NhentaiNetwork {
       return Res(
           removeNullValue(List.generate(
               comicDoms.length, (index) => parseComic(comicDoms[index]))),
-          subData: lastPagination == null ? 1 : int.parse(lastPagination));
+          subData: parseLastPage(lastPagination));
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Data Analyse", "$e\n$s");
       return Res(null, errorMessage: "Failed to Parse Data: $e");
@@ -369,12 +369,11 @@ class NhentaiNetwork {
       var comics = document.querySelectorAll("div.gallery");
       var lastPagination = document
           .querySelector("section.pagination > a.last")
-          ?.attributes["href"]
-          ?.nums;
+          ?.attributes["href"];
       return Res(
           removeNullValue(List.generate(
               comics.length, (index) => parseComic(comics[index]))),
-          subData: lastPagination == null ? 1 : int.parse(lastPagination));
+          subData: parseLastPage(lastPagination));
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Data Analyse", "$e\n$s");
       return Res(null, errorMessage: "Failed to Parse Data: $e");
@@ -427,8 +426,7 @@ class NhentaiNetwork {
 
       var lastPagination = document
           .querySelector("section.pagination > a.last")
-          ?.attributes["href"]
-          ?.nums;
+          ?.attributes["href"];
 
       Future.microtask(() {
         try {
@@ -445,7 +443,7 @@ class NhentaiNetwork {
       return Res(
           removeNullValue(List.generate(
               comicDoms.length, (index) => parseComic(comicDoms[index]))),
-          subData: lastPagination == null ? 1 : int.parse(lastPagination));
+          subData: parseLastPage(lastPagination));
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Data Analyse", "$e\n$s");
       return Res(null, errorMessage: "Failed to Parse Data: $e");

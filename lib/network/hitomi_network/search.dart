@@ -7,6 +7,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pica_comic/foundation/def.dart';
+import 'package:pica_comic/tools/issue_parsers.dart';
 import '../res.dart';
 import 'hitomi_main_network.dart';
 
@@ -166,16 +167,8 @@ class HitomiSearch{
   }
 
   Future<List<int>> getGalleryIdsForTermAndLanguage(String term, String language) async{
-    final ns = term.split(':')[0];
-    var tag = term.split(':')[1];
-    String? area = ns;
-
-    if(ns == 'female' || ns == 'male'){
-      area = 'tag';
-      tag = term[0];
-    }
-
-    return getGalleryIdsFromNozomi(area, tag, language);
+    final resolved = resolveTermAndLanguage(term, language);
+    return getGalleryIdsFromNozomi(resolved.area, resolved.tag, resolved.language);
   }
 
   Uint8List hashTerm(String term){

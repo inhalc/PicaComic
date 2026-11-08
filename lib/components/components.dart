@@ -28,6 +28,7 @@ import 'package:pica_comic/pages/show_image_page.dart';
 import 'package:pica_comic/tools/extensions.dart';
 import 'package:pica_comic/tools/tags_translation.dart';
 import 'package:pica_comic/tools/translations.dart';
+import 'package:pica_comic/tools/ui_state.dart';
 
 import '../base.dart';
 import '../foundation/ui_mode.dart';

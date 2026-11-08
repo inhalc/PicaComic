@@ -3,6 +3,8 @@
 /// They live in a dependency-free file so the regression tests can exercise
 /// them without pulling in the whole networking stack.
 
+import 'dart:convert';
+
 /// A small slack avoids false positives from a trailing newline/padding.
 const int kImageLengthSlack = 16;
 
@@ -55,3 +57,74 @@ String fallbackImageExtension(List<int> data) {
   }
   return '';
 }
+
+/// Whether a byte buffer looks like an HTML/JSON/text error page rather than
+/// an image. Real compressed image data almost always contains non-UTF-8
+/// bytes or control characters, so it fails this check and is left alone.
+///
+/// This is deliberately conservative: unknown-but-binary formats (AVIF, BMP,
+/// JPEG XL, custom-source payloads, ...) must NOT be rejected just because
+/// [fallbackImageExtension] does not know their magic bytes. The decoder is
+/// the final authority; here we only catch responses that are clearly text.
+bool _looksLikeTextPayload(List<int> data) {
+  final length = data.length > 256 ? 256 : data.length;
+  String text;
+  try {
+    // Strict decoding: binary image data throws and is therefore not text.
+    text = const Utf8Decoder().convert(data.sublist(0, length));
+  } catch (_) {
+    return false;
+  }
+  if (text.isEmpty) return false;
+  for (final unit in text.codeUnits) {
+    if (unit < 0x20 && unit != 0x09 && unit != 0x0A && unit != 0x0D) {
+      return false;
+    }
+    if (unit == 0x7F) return false;
+  }
+  final lower = text.toLowerCase();
+  return lower.contains('<') ||
+      lower.contains('{') ||
+      lower.contains('[') ||
+      lower.contains('html') ||
+      lower.contains('error') ||
+      lower.contains('denied') ||
+      lower.contains('forbidden') ||
+      lower.contains('access');
+}
+
+/// Validate a downloaded image payload before it is decoded or cached.
+///
+/// JM's image CDN answers anti-scraping requests with HTTP 200 and a tiny
+/// (124-byte) HTML/JSON error page. Such a response is length-consistent, so
+/// [checkImageComplete] cannot catch it; the decoder then fails with the
+/// opaque "Failed to decode image" message from issue #93. Reject it here.
+///
+/// Returns a human-readable error string, or `null` when [data] looks like a
+/// decodable image. [contentType] is matched case-insensitively and tolerates
+/// a `; charset=...` suffix. Deliberately does NOT require a known magic
+/// signature, because that would break every image format outside
+/// JPEG/PNG/GIF/WEBP (and custom comic sources that transform bytes).
+String? imagePayloadError(List<int> data, {String? contentType}) {
+  final type = contentType?.split(';').first.trim().toLowerCase();
+  if (type == 'text/html' ||
+      type == 'application/json' ||
+      type == 'text/plain') {
+    return 'Unsupported image Content-Type: $contentType';
+  }
+
+  // An error page (or any other non-image) is far smaller than a real photo.
+  if (data.length < 64) {
+    return 'Image payload is too short: ${data.length} bytes';
+  }
+
+  if (_looksLikeTextPayload(data)) {
+    return 'Image response looks like a text error page '
+        '(Content-Type: $contentType, length: ${data.length} bytes)';
+  }
+  return null;
+}
+
+/// Boolean wrapper around [imagePayloadError].
+bool isValidImagePayload(List<int> data, {String? contentType}) =>
+    imagePayloadError(data, contentType: contentType) == null;
