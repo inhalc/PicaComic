@@ -55,7 +55,9 @@ android {
     }
 
     defaultConfig {
-        applicationId "com.github.pacalini.pica_comic"
+        // Test build: separate application id so it can be installed next to
+        // the official release without wiping its data.
+        applicationId "com.github.pacalini.pica_comic.fix"
         // You can update the following values to match your application needs.
         // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
         minSdkVersion flutter.minSdkVersion
