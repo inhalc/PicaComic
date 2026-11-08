@@ -62,6 +62,8 @@ part 'reading_settings.dart';
 
 part 'reading_data.dart';
 
+part 'prefetch_scheduler.dart';
+
 ///阅读器
 class ComicReadingPage extends StatelessWidget {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
@@ -273,6 +275,10 @@ class ComicReadingPage extends StatelessWidget {
         cancelKeepScreenOn();
       }
       logic.runningAutoPageTurning = false;
+      // Stop preloading and let in-flight page downloads abort: keeping them
+      // alive would download the rest of the gallery after the reader closed.
+      logic.chapterToken++;
+      logic.stopPrefetch();
       ComicImage.clear();
       StateController.remove<ComicReadingPageLogic>();
       // 更新本地收藏
@@ -509,6 +515,9 @@ class ComicReadingPage extends StatelessWidget {
       logic.errorMessage = res.errorMessage;
     } else {
       logic.urls = res.data;
+      // Start following the reader: the visible page first, then one page at
+      // a time ahead of it. See ReaderPrefetchScheduler.
+      logic.startPrefetch();
     }
     logic.isLoading = false;
     logic.update();

@@ -79,6 +79,17 @@ class _ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   Object? _lastException;
   ImageStreamCompleterHandle? _completerHandle;
 
+  /// Safety net for a silently aborted load.
+  ///
+  /// The reader drops downloads of pages the user has left behind; such a
+  /// load ends without an image *and* without an error, which would leave a
+  /// spinner on screen forever if the widget is still alive (a page kept in
+  /// the list's two-screen cache extent, for example). Re-resolving picks up
+  /// the cached image, joins the still-running download, or restarts it once
+  /// the page is wanted again.
+  Timer? _stallTimer;
+  int _stallRetries = 0;
+
   static final Map<int, Size> _cache = {};
 
   static clear() => _cache.clear();
@@ -93,6 +104,8 @@ class _ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   @override
   void dispose() {
     assert(_imageStream != null);
+    _stallTimer?.cancel();
+    _stallTimer = null;
     WidgetsBinding.instance.removeObserver(this);
     _stopListeningToStream();
     _completerHandle?.dispose();
@@ -153,6 +166,28 @@ class _ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
       size: widget.width != null && widget.height != null ? Size(widget.width!, widget.height!) : null,
     ));
     _updateSourceStream(newStream);
+    _scheduleStallRetry();
+  }
+
+  /// Ask again later when nothing arrives, with a growing delay so a genuinely
+  /// slow page is not re-requested in a tight loop. [ImageProvider.resolve]
+  /// reuses the in-flight completer, so a normal slow download is not
+  /// duplicated.
+  void _scheduleStallRetry() {
+    _stallTimer?.cancel();
+    _stallTimer = null;
+    if (!mounted || _imageInfo != null || _lastException != null) return;
+    if (_stallRetries >= 6) return;
+    // The first retry is quick: when the reader jumps back to a page whose
+    // download was dropped, this is what starts it again. Resolving a page
+    // that is still downloading reuses the in-flight completer, so a healthy
+    // slow page pays nothing.
+    final delay = Duration(seconds: 2 + _stallRetries * 4);
+    _stallTimer = Timer(delay, () {
+      if (!mounted || _imageInfo != null || _lastException != null) return;
+      _stallRetries++;
+      _resolveImage();
+    });
   }
 
   ImageStreamListener? _imageStreamListener;
@@ -173,6 +208,9 @@ class _ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   }
 
   void _handleImageFrame(ImageInfo imageInfo, bool synchronousCall) {
+    _stallRetries = 0;
+    _stallTimer?.cancel();
+    _stallTimer = null;
     setState(() {
       _replaceImage(info: imageInfo);
       _loadingProgress = null;
@@ -199,7 +237,11 @@ class _ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   // registration from the old stream to the new stream (if a listener was
   // registered).
   void _updateSourceStream(ImageStream newStream) {
-    if (_imageStream?.key == newStream.key) {
+    // Same key is not enough: a cancelled load is evicted and the next
+    // resolve creates a *new* completer for that key. Returning early there
+    // would keep this widget listening to the dead stream forever.
+    if (_imageStream?.key == newStream.key &&
+        identical(_imageStream?.completer, newStream.completer)) {
       return;
     }
 

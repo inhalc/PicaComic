@@ -58,11 +58,16 @@ abstract class ReadingData {
     }
   }
 
-  ImageProvider createImageProvider(int ep, int page, String url){
+  /// [priorityOf] tells the download pool how urgent this page currently is;
+  /// see [ComicReadingPageLogic.loadPriorityForPage].
+  ImageProvider createImageProvider(int ep, int page, String url,
+      {int Function()? priorityOf}) {
     if (downloaded && checkEpDownloaded(ep)){
+      // Local files never wait for the network, so they need no priority.
       return FileImageProvider(downloadId, hasEp ? ep : 0, page);
     } else {
-      return StreamImageProvider(() => loadImage(ep, page, url), buildImageKey(ep, page, url));
+      return StreamImageProvider(() => loadImage(ep, page, url),
+          buildImageKey(ep, page, url), priorityOf: priorityOf);
     }
   }
 

@@ -56,7 +56,115 @@ class ComicReadingPageLogic extends StateController {
 
   bool get isCtrlPressed => HardwareKeyboard.instance.isControlPressed;
 
-  List<bool> requestedLoadingItems = [];
+  /// The page the reader is currently looking at, 1-based.
+  ///
+  /// Every image download asks [loadPriorityForPage] for its live priority, so
+  /// this must change as soon as the visible page changes.
+  int prefetchAnchor = 1;
+
+  /// Incremented on every chapter change. Downloads from the previous chapter
+  /// see a mismatching token and abort instead of competing with the new one.
+  int chapterToken = 0;
+
+  ReaderPrefetchScheduler? _prefetchScheduler;
+
+  /// How many pages ahead the user asked for (settings[28], 0-15).
+  int get preloadPageCount {
+    final value = int.tryParse(appdata.settings[28]) ?? 2;
+    return value.clamp(0, 15);
+  }
+
+  /// Priority of [page] (1-based) for the shared download pool.
+  ///
+  /// Negative means "the reader has moved away": the load is dropped even if
+  /// it was already queued, and an in-flight download aborts. This is what
+  /// stops a long gallery from loading the ten pages that were merely swiped
+  /// past while the page in front of the user still waits.
+  int loadPriorityForPage(int page) {
+    if (urls.isEmpty) {
+      return ImageLoadPriority.nearby;
+    }
+    final anchor = prefetchAnchor.clamp(1, urls.length).toInt();
+    final distance = page - anchor;
+    // One page behind is kept: it is the page the user just left, and an
+    // accidental flip back should not start from zero. Anything further back
+    // is off-screen in every reading mode.
+    if (distance < -1) {
+      return ImageLoadPriority.skip;
+    }
+    if (distance == 0) {
+      return ImageLoadPriority.current;
+    }
+    if (distance == 1) {
+      return ImageLoadPriority.adjacent;
+    }
+    if (distance < 0) {
+      return ImageLoadPriority.nearby;
+    }
+    // Never drop a page that may still be built by the list: a continuous
+    // reader can show several pages at once, and a page that starts loading
+    // while visible must not be cancelled just because the user configured a
+    // small preload window. Beyond this bound the page is either a stale
+    // speculative request or far off-screen.
+    const visibleAhead = 6;
+    final aheadLimit =
+        preloadPageCount > visibleAhead ? preloadPageCount : visibleAhead;
+    if (distance <= aheadLimit) {
+      return distance <= 2
+          ? ImageLoadPriority.nearby
+          : ImageLoadPriority.prefetch;
+    }
+    return ImageLoadPriority.skip;
+  }
+
+  /// Moves the download focus to [page].
+  void updatePrefetchAnchor(int page) {
+    if (urls.isEmpty) {
+      prefetchAnchor = 1;
+      return;
+    }
+    final next = page.clamp(1, urls.length).toInt();
+    if (next == prefetchAnchor && _prefetchScheduler != null) {
+      return;
+    }
+    prefetchAnchor = next;
+    _prefetchScheduler?.onAnchorChanged();
+  }
+
+  /// Starts (or restarts) preloading once the page list is available.
+  ///
+  /// The scheduler loads the current page first and only then walks forward,
+  /// so on a slow connection the visible page always has the whole link.
+  void startPrefetch() {
+    if (urls.isEmpty) return;
+    prefetchAnchor = index.clamp(1, urls.length).toInt();
+    (_prefetchScheduler ??= ReaderPrefetchScheduler(this)).start();
+  }
+
+  void stopPrefetch() {
+    _prefetchScheduler?.dispose();
+    _prefetchScheduler = null;
+  }
+
+  /// Invalidates downloads and preloading of the chapter being left.
+  void _beginChapterTransition() {
+    chapterToken++;
+    stopPrefetch();
+  }
+
+  /// Provider for [page] (1-based) with its live download priority attached.
+  ImageProvider imageProviderFor(int page) {
+    final token = chapterToken;
+    return data.createImageProvider(
+      order,
+      page - 1,
+      urls[page - 1],
+      priorityOf: () {
+        if (token != chapterToken) return ImageLoadPriority.skip;
+        return loadPriorityForPage(page);
+      },
+    );
+  }
 
   bool haveUsedInitialPage = false;
 
@@ -139,6 +247,7 @@ class ComicReadingPageLogic extends StateController {
   ///当前的页面, 0和最后一个为空白页, 用于进行章节跳转
   set index(int value) {
     _index = value;
+    updatePrefetchAnchor(value);
     for (var element in _indexChangeCallbacks) {
       element(value);
     }
@@ -168,6 +277,7 @@ class ComicReadingPageLogic extends StateController {
   var urls = <String>[];
 
   void reload() {
+    _beginChapterTransition();
     index = 1;
     pageController = PageController(initialPage: 1);
     isLoading = true;
@@ -249,7 +359,7 @@ class ComicReadingPageLogic extends StateController {
     }
     order += 1;
     urls = [];
-    requestedLoadingItems = [];
+    _beginChapterTransition();
     isLoading = true;
     tools = false;
     index = 1;
@@ -261,7 +371,7 @@ class ComicReadingPageLogic extends StateController {
   void jumpToChapter(int index){
     order = index;
     urls = [];
-    requestedLoadingItems = [];
+    _beginChapterTransition();
     isLoading = true;
     tools = false;
     this.index = 1;
@@ -285,7 +395,7 @@ class ComicReadingPageLogic extends StateController {
 
     order -= 1;
     urls = [];
-    requestedLoadingItems = [];
+    _beginChapterTransition();
     isLoading = true;
     tools = false;
     pageController = PageController(initialPage: 1);
@@ -329,7 +439,7 @@ class ComicReadingPageLogic extends StateController {
     showFloatingButtonValue = 0;
     index = 1;
     urls.clear();
-    requestedLoadingItems = [];
+    _beginChapterTransition();
     isLoading = true;
     tools = false;
     showSettings = false;

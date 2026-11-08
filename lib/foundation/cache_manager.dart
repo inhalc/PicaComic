@@ -413,6 +413,8 @@ class CachingFile {
 
   int _written = 0;
 
+  bool _closed = false;
+
   Future<void> writeBytes(List<int> data) async {
     _written += data.length;
     _buffer.addAll(data);
@@ -443,9 +445,13 @@ class CachingFile {
     // limit was never enforced for downloaded comic pages.
     manager._addSize(_written);
     await manager._enforceLimit();
+    _closed = true;
   }
 
   Future<void> cancel() async {
+    // A completed download must never be deleted by the cancellation path of
+    // the stream that produced it.
+    if (_closed) return;
     await file.deleteIgnoreError();
     CacheManager()._db.execute('DELETE FROM cache WHERE key = ?', [key]);
   }

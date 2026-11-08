@@ -13,6 +13,32 @@ import 'package:pica_comic/foundation/image_loader/load_slot_limiter.dart';
 import 'package:pica_comic/foundation/log.dart';
 import 'package:pica_comic/tools/image_integrity.dart';
 
+/// Download lanes for image loads.
+///
+/// Every image load reports a priority while it waits for a download slot.
+/// The reader makes the page in front of the user urgent, the next pages
+/// normal, and pages the user swiped away negative so they are dropped instead
+/// of still downloading minutes later. Higher wins; [skip] means "nobody
+/// needs this page anymore".
+class ImageLoadPriority {
+  const ImageLoadPriority._();
+
+  /// The page currently on screen.
+  static const int current = 100;
+
+  /// The page right next to it (swiped half-way, or the second panel).
+  static const int adjacent = 80;
+
+  /// Ordinary images: covers, thumbnails, pages close to the current one.
+  static const int nearby = 50;
+
+  /// Speculative preload of pages further ahead.
+  static const int prefetch = 20;
+
+  /// Drop the load: the reader has moved away from this page.
+  static const int skip = -1;
+}
+
 /// Internal signal used when an image stream is cancelled before decoding
 /// finishes (a page scrolled away, or the reader was closed). This is normal
 /// and must not bubble up as an "Image loading is stopped" error that makes
@@ -410,7 +436,18 @@ class SingleFrameImageStreamCompleter extends ImageStreamCompleter {
 
 abstract class BaseImageProvider<T extends BaseImageProvider<T>>
     extends ImageProvider<T> {
-  const BaseImageProvider();
+  const BaseImageProvider({this.priorityOf});
+
+  /// Live priority of this load, evaluated while it waits for a download slot.
+  ///
+  /// A callback (instead of a fixed value) is required: a page that was the
+  /// current one when its widget was built can be ten pages behind a second
+  /// later, and it must lose its claim on the network immediately.
+  /// `null` means "ordinary image" — covers and thumbnails never get skipped.
+  final int Function()? priorityOf;
+
+  /// Current priority, or [ImageLoadPriority.nearby] when no policy is set.
+  int get loadPriority => priorityOf?.call() ?? ImageLoadPriority.nearby;
 
   @override
   ImageStreamCompleter loadImage(T key, ImageDecoderCallback decode) {
@@ -473,12 +510,26 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
               data = cachedBytes;
             } else {
               if (stop) break;
+              // A page whose priority turned negative has been left behind:
+              // do not queue (or start) a multi-megabyte download for it.
+              if (loadPriority < 0) {
+                throw const ImageLoadingStopped();
+              }
               // Back-pressure for very large originals: E-Hentai pages can be
               // 10-15 MB each. Without a cap, precaching 5+ of them at once
               // allocates hundreds of MB and stalls the whole app.
-              final slot = await _loadSlots.acquire();
+              //
+              // The slot is granted by priority, so a page the user just
+              // opened jumps ahead of pages that were merely swiped past.
+              final slot =
+                  await _loadSlots.acquire(priority: priorityOf);
               Uint8List bytes;
               try {
+                // The page may have been left behind while this load waited in
+                // the queue.
+                if (loadPriority < 0) {
+                  throw const ImageLoadingStopped();
+                }
                 bytes = await load(chunkEvents);
               } finally {
                 slot.release();
@@ -506,6 +557,14 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
             }
           }
         } catch (e) {
+          if (e is LoadSlotSkipped) {
+            // The reader moved away while queued. Treat it exactly like an
+            // explicit cancellation: silent, no retry.
+            throw const ImageLoadingStopped();
+          }
+          if (e is ImageLoadingStopped) {
+            rethrow;
+          }
           if(e.toString().contains("Maximum image loading limit reached")) {
             rethrow;
           }

@@ -179,6 +179,9 @@ class ImageManager {
       if (url.contains("ehgt.org") || url.contains("s.exhentai.org")) {
         ehgtLoading--;
       }
+      // A cancelled stream (the reader moved on) leaves a partial file behind
+      // unless it is removed here. `cancel()` is a no-op after `close()`.
+      caching?.cancel();
       loadingItems.remove(url);
     }
   }
@@ -483,6 +486,7 @@ class ImageManager {
       }
       rethrow;
     } finally {
+      caching?.cancel();
       loadingItems.remove(cacheKey);
     }
   }
@@ -565,6 +569,7 @@ class ImageManager {
       }
       rethrow;
     } finally {
+      caching?.cancel();
       loadingItems.remove(image.hash);
     }
   }
@@ -669,6 +674,7 @@ class ImageManager {
       }
       rethrow;
     } finally {
+      caching?.cancel();
       loadingItems.remove(urlWithoutParam);
     }
   }
@@ -772,6 +778,7 @@ class ImageManager {
       }
       rethrow;
     } finally {
+      caching?.cancel();
       loadingItems.remove(cacheKey);
     }
   }
@@ -886,6 +893,7 @@ class ImageManager {
       }
       rethrow;
     } finally {
+      caching?.cancel();
       loadingItems.remove(cacheKey);
     }
   }

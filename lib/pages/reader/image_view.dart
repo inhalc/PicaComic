@@ -49,8 +49,6 @@ extension ImageExt on ComicReadingPage {
             imageWidth = height / 1.2;
           }
 
-          precacheComicImage(logic, context, index + 1, target);
-
           ImageProvider image = createImageProvider(type, logic, index, target);
           return ComicImage(
             filterQuality: FilterQuality.medium,
@@ -84,8 +82,6 @@ extension ImageExt on ComicReadingPage {
                 scaleStateController: PhotoViewScaleStateController(),
                 child: const SizedBox(),);
           }
-
-          precacheComicImage(logic, context, index, target);
 
           BoxFit getFit() {
             switch (appdata.settings[41]) {
@@ -228,8 +224,6 @@ extension ImageExt on ComicReadingPage {
             return PhotoViewGalleryPageOptions.customChild(
                 child: const SizedBox());
           }
-          precacheComicImage(logic, context, index * 2 + 1, target);
-
           logic.photoViewControllers[index] ??= PhotoViewController();
 
           int firstImage = index * 2 - 2;
@@ -391,10 +385,13 @@ extension ImageExt on ComicReadingPage {
   }
 
   /// create a image provider
+  ///
+  /// The provider carries the page's *live* download priority, so the download
+  /// pool always serves the page the reader is looking at first. Preloading
+  /// itself is driven by [ReaderPrefetchScheduler].
   ImageProvider createImageProvider(
       ReadingType type, ComicReadingPageLogic logic, int index, String target) {
-
-    return logic.data.createImageProvider(logic.order, index, logic.urls[index]);
+    return logic.imageProviderFor(index + 1);
   }
 
   /// check current location of [PageView], update location when it is out of range.
@@ -432,46 +429,5 @@ extension ImageExt on ComicReadingPage {
       }
     }
     return false;
-  }
-
-  /// preload image
-  void precacheComicImage(ComicReadingPageLogic logic, BuildContext context,
-      int index, String target) {
-    if (index < 0) {
-      index = 0;
-    }
-    // The list has one extra slot (index 0 is a blank page), so its length is
-    // `logic.length + 1`. Comparing against `logic.length` used to recreate
-    // the list on every build, and the "already requested" flags were never
-    // set. As a result every rebuild re-issued precacheImage() for the same
-    // pages, piling up decodes/downloads and making long reading sessions
-    // progressively slower until the UI froze.
-    if (logic.requestedLoadingItems.length != logic.length + 1) {
-      logic.requestedLoadingItems = List<bool>.filled(logic.length + 1, false);
-    }
-    int precacheNum = int.parse(appdata.settings[28]) + index;
-    if (!ImageManager.haveTask) {
-      precacheNum += 3;
-    }
-    for (; index < precacheNum; index++) {
-      if (index >= logic.urls.length) {
-        return;
-      }
-      if (logic.requestedLoadingItems[index]) {
-        continue;
-      }
-      final page = index;
-      logic.requestedLoadingItems[page] = true;
-      precacheImage(
-        createImageProvider(type, logic, page, target),
-        context,
-        onError: (Object error, StackTrace? stack) {
-          // Allow a later retry instead of leaving the page permanently blank.
-          if (page < logic.requestedLoadingItems.length) {
-            logic.requestedLoadingItems[page] = false;
-          }
-        },
-      );
-    }
   }
 }

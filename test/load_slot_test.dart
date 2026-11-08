@@ -63,6 +63,73 @@ void main() {
     expect(slot.released, isTrue);
   });
 
+  test('the page in front of the user is served before queued earlier pages',
+      () async {
+    final limiter = LoadSlotLimiter(
+      maxConcurrent: 1,
+      waitTime: const Duration(seconds: 30),
+    );
+    final held = await limiter.acquire();
+
+    final order = <String>[];
+    final low = limiter.acquire(priority: () => 10).then((slot) {
+      order.add('old page');
+      return slot;
+    });
+    final high = limiter.acquire(priority: () => 100).then((slot) {
+      order.add('current page');
+      return slot;
+    });
+
+    // Both are queued while the single slot is busy.
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(order, isEmpty);
+
+    held.release();
+    final highSlot = await high;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    expect(order, ['current page'],
+        reason: 'the visible page must not wait for a page that was swiped '
+            'past');
+
+    highSlot.release();
+    final lowSlot = await low;
+    expect(order, ['current page', 'old page']);
+    lowSlot.release();
+  });
+
+  test('a page that is no longer wanted leaves the queue instead of loading',
+      () async {
+    final limiter = LoadSlotLimiter(
+      maxConcurrent: 1,
+      waitTime: const Duration(seconds: 30),
+      pollInterval: const Duration(milliseconds: 10),
+    );
+    final held = await limiter.acquire();
+
+    var priority = 20;
+    final queued = limiter.acquire(priority: () => priority);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    // The reader flipped away from this page.
+    priority = -1;
+    await expectLater(queued, throwsA(isA<LoadSlotSkipped>()));
+    expect(limiter.running, 1,
+        reason: 'the skipped page must not consume a slot');
+
+    held.release();
+    expect(limiter.running, 0);
+  });
+
+  test('acquire never starts when the page is already unwanted', () async {
+    final limiter = LoadSlotLimiter();
+    await expectLater(
+      limiter.acquire(priority: () => -1),
+      throwsA(isA<LoadSlotSkipped>()),
+    );
+    expect(limiter.running, 0);
+  });
+
   test('an expired lease reclaims the slot of a hung download', () async {
     final limiter = LoadSlotLimiter(
       maxConcurrent: 1,
