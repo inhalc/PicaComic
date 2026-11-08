@@ -37,7 +37,10 @@ void main(List<String> args) {
       LogManager.addLog(LogLevel.error, "Unhandled Exception",
           "${details.exception}\n${details.stack}");
     };
-    notFirstUse = appdata.firstUse[3] == "1";
+    // welcomeCompleted is stored independently of the exported data, so an
+    // import or a damaged settings file cannot send a returning user back
+    // to the first-run wizard.
+    notFirstUse = appdata.welcomeCompleted || appdata.firstUse[3] == "1";
     setNetworkProxy();
     runApp(const MyApp());
     if (App.isDesktop) {

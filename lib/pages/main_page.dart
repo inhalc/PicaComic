@@ -196,8 +196,9 @@ class MainPageState extends State<MainPage> {
     _checkUpdates();
     _checkDownload();
 
-    if (appdata.firstUse[3] == "0") {
+    if (!appdata.welcomeCompleted || appdata.firstUse[3] == "0") {
       appdata.firstUse[3] = "1";
+      appdata.welcomeCompleted = true;
       appdata.writeData();
     }
 

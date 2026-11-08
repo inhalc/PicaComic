@@ -17,6 +17,12 @@ export 'foundation/def.dart';
 
 String get pathSep => Platform.pathSeparator;
 
+/// Separate from [Appdata.firstUse]: this flag is deliberately *not* part of
+/// the exported user data. Importing a backup (or syncing from WebDAV) must
+/// never reset the onboarding state and send a returning user back to the
+/// first-run wizard.
+const String welcomeCompletedKey = "welcomeCompleted";
+
 var downloadManager = DownloadManager();
 
 class Appdata {
@@ -119,7 +125,8 @@ class Appdata {
     "gold-usergeneratedcontent.net", //87 hitomi cdn url
     "0", //88 jm auto checkin
     "2.0.11", //89 jm app version
-    "0", //90 阅读器中播放 GIF 动图动画(关闭时只显示首帧, 避免持续解码导致卡顿)
+    "0", //90 (deprecated) 旧版 GIF 开关, 保留以兼容已导出的用户数据
+    "0", //91 阅读器中仅显示 GIF 首帧: 1-静态首帧, 0-降载播放动画
   ];
 
   /// 隐式数据, 用于存储一些不需要用户设置的数据, 此数据通常为某些组件的状态, 此设置不应当被同步
@@ -159,6 +166,12 @@ class Appdata {
     "1", //显示本地收藏夹的管理提示
   ];
 
+  /// 是否已完成初始配置向导。
+  ///
+  /// 独立存放在 SharedPreferences 中, 不写入导出文件。导入数据、WebDAV 同步或
+  /// settings 文件损坏都不会让老用户重新看到欢迎页。
+  bool welcomeCompleted = false;
+
   int getSearchMode() {
     var modes = ["dd", "da", "ld", "vd"];
     return modes.indexOf(settings[1]);
@@ -174,15 +187,24 @@ class Appdata {
   Future<void> readSettings(SharedPreferences s) async {
     var settingsFile = File("${App.dataPath}/settings");
     List<String> st;
-    if (settingsFile.existsSync()) {
-      var json = jsonDecode(await settingsFile.readAsString());
-      if (json is List) {
-        st = List.from(json);
+    bool fileBroken = false;
+    try {
+      if (settingsFile.existsSync()) {
+        var json = jsonDecode(await settingsFile.readAsString());
+        st = json is List
+            ? List<String>.from(json.map((e) => e.toString()))
+            : <String>[];
       } else {
-        st = [];
+        st = s.getStringList("settings") ?? <String>[];
       }
-    } else {
-      st = s.getStringList("settings") ?? [];
+    } catch (e) {
+      // A process killed in the middle of an import can leave a truncated
+      // settings file. Never let that abort readData(): firstUse and the
+      // onboarding flag live in SharedPreferences and must still be loaded.
+      fileBroken = true;
+      st = s.getStringList("settings") ?? <String>[];
+      LogManager.addLog(
+          LogLevel.error, "Appdata", "settings file is unreadable: $e");
     }
     for (int i = 0; i < st.length && i < settings.length; i++) {
       settings[i] = st[i];
@@ -190,11 +212,24 @@ class Appdata {
     if (settings[26].length < 2) {
       settings[26] += "0";
     }
+    if (fileBroken) {
+      // Repair the damaged file so the next start does not hit this path.
+      try {
+        await updateSettings(false);
+      } catch (_) {}
+    }
   }
 
   Future<void> updateSettings([bool syncData = true]) async {
     var settingsFile = File("${App.dataPath}/settings");
-    await settingsFile.writeAsString(jsonEncode(settings));
+    // Atomic write: write a temp file first, then rename. A half-written
+    // settings file used to break startup after an interrupted import.
+    final temp = File("${settingsFile.path}.tmp");
+    await temp.writeAsString(jsonEncode(settings));
+    if (await settingsFile.exists()) {
+      await settingsFile.delete();
+    }
+    await temp.rename(settingsFile.path);
     if (syncData) {
       Webdav.uploadData();
     }
@@ -202,6 +237,7 @@ class Appdata {
 
   void writeFirstUse() async {
     var s = await SharedPreferences.getInstance();
+    await s.setBool(welcomeCompletedKey, welcomeCompleted || firstUse[3] == "1");
     await s.setStringList("firstUse", firstUse);
   }
 
@@ -216,29 +252,77 @@ class Appdata {
       Webdav.uploadData();
     }
     var s = await SharedPreferences.getInstance();
-    await updateSettings();
+    // Persist the onboarding state first. It must survive even if writing
+    // the settings file is interrupted later in this method.
+    await s.setBool(welcomeCompletedKey, welcomeCompleted || firstUse[3] == "1");
     await s.setStringList("blockingKeyword", blockingKeyword);
     await s.setStringList("firstUse", firstUse);
+    // Respect the caller's sync flag. updateSettings() defaults to true and
+    // would otherwise trigger a WebDAV upload during a data import.
+    await updateSettings(sync);
   }
 
   Future<bool> readData() async {
     var s = await SharedPreferences.getInstance();
+    List<String>? storedFirstUse;
     try {
+      // readSettings() handles a damaged file itself; keep the remaining
+      // reads in their own try/catch so one bad key cannot abort onboarding.
       await readSettings(s);
+    } catch (e) {
+      LogManager.addLog(LogLevel.error, "Appdata", "readSettings failed: $e");
+    }
+    try {
       searchHistory = s.getStringList("search") ?? [];
       favoriteTags = (s.getStringList("favoriteTags") ?? []).toSet();
       blockingKeyword = s.getStringList("blockingKeyword") ?? [];
-      if (s.getStringList("firstUse") != null) {
-        var st = s.getStringList("firstUse")!;
-        for (int i = 0; i < st.length; i++) {
-          firstUse[i] = st[i];
+      storedFirstUse = s.getStringList("firstUse");
+      if (storedFirstUse != null) {
+        for (int i = 0;
+            i < storedFirstUse.length && i < firstUse.length;
+            i++) {
+          firstUse[i] = storedFirstUse[i];
         }
       }
-      readImplicitData();
-      return firstUse[3] == "1";
     } catch (e) {
-      return false;
+      LogManager.addLog(LogLevel.error, "Appdata", "read user data failed: $e");
     }
+    readImplicitData();
+
+    bool? storedFlag;
+    bool hasStoredSettings = false;
+    bool hasSettingsFile = false;
+    try {
+      storedFlag = s.getBool(welcomeCompletedKey);
+      hasStoredSettings = s.getStringList("settings") != null;
+      hasSettingsFile = File("${App.dataPath}/settings").existsSync();
+    } catch (e) {
+      LogManager.addLog(
+          LogLevel.error, "Appdata", "read onboarding flag failed: $e");
+    }
+    welcomeCompleted = storedFlag ?? false;
+    if (!welcomeCompleted && firstUse[3] == "1") {
+      // Migrate installs that predate the independent flag.
+      welcomeCompleted = true;
+    }
+    if (!welcomeCompleted &&
+        storedFlag == null &&
+        (hasStoredSettings || hasSettingsFile)) {
+      // The onboarding flag was lost (e.g. an interrupted import), but this
+      // device clearly already has user data. Do not send a returning user
+      // through the first-run wizard again. clearAppdata() removes both the
+      // settings file and SharedPreferences, so "delete all data" still
+      // shows the welcome page.
+      welcomeCompleted = true;
+      firstUse[3] = "1";
+      LogManager.addLog(LogLevel.info, "Appdata",
+          "recovered onboarding flag from existing user data");
+      try {
+        await s.setBool(welcomeCompletedKey, true);
+        await s.setStringList("firstUse", firstUse);
+      } catch (_) {}
+    }
+    return welcomeCompleted || firstUse[3] == "1";
   }
 
   Map<String, dynamic> toJson() => {
@@ -262,21 +346,38 @@ class Appdata {
       for (var i = 0; i < firstUse.length && i < newFirstUse.length; i++) {
         firstUse[i] = newFirstUse[i];
       }
+      // Importing is only reachable after the first-run wizard. An export
+      // created before the wizard was finished (or with a stale firstUse)
+      // must never send the user back to it. The caller persists the state.
+      firstUse[3] = "1";
+      welcomeCompleted = true;
       if (json["history"] != null) {
         history.readDataFromJson(json["history"]);
       }
       // merge data
-      blockingKeyword = Set<String>.from(
-              ((json["blockingKeywords"] ?? []) + blockingKeyword) as List)
-          .toList();
-      favoriteTags =
-          Set.from((json["favoriteTags"] ?? []) + List.from(favoriteTags));
-      writeData(false);
+      // JSON decoding produces List<dynamic>. Concatenating it with a
+      // List<String> via `+` throws a runtime type error (the old code did
+      // that and made the whole import fail). Use typed set literals instead.
+      final importedKeywords =
+          (json["blockingKeywords"] as List?) ?? const <dynamic>[];
+      blockingKeyword = <String>{
+        ...importedKeywords.map((e) => e.toString()),
+        ...blockingKeyword,
+      }.toList();
+      final importedTags = (json["favoriteTags"] as List?) ?? const <dynamic>[];
+      favoriteTags = <String>{
+        ...importedTags.map((e) => e.toString()),
+        ...favoriteTags,
+      };
+      // Do not write here: an unawaited write races with the rest of the
+      // import and can be lost when the process is killed. importData()
+      // awaits writeData(false) once everything has been merged.
       return true;
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Appdata.readDataFromJson",
           "error reading appdata$e\n$s");
-      readData();
+      // Do not call readData() here: it is async and would race with the
+      // import, potentially rolling the freshly imported state back.
       return false;
     }
   }
@@ -286,6 +387,27 @@ class Appdata {
 
 var appdata = Appdata();
 var notifications = Notifications();
+
+/// Set while a user-data import is rebuilding databases.
+///
+/// The app uses the synchronous `sqlite3` FFI binding on the main isolate.
+/// Importing a few thousand history / favorite rows used to trigger one
+/// fsync, one WebDAV upload and one UI rebuild *per row*, which blocked the
+/// UI thread long enough to produce an ANR. Managers check this flag to skip
+/// per-row side effects and do a single commit / refresh at the end instead.
+class ImportMode {
+  static int _depth = 0;
+
+  static bool get active => _depth > 0;
+
+  /// A counter (instead of a plain flag) keeps nested / recursive import
+  /// helpers from clearing the mode too early.
+  static void begin() => _depth++;
+
+  static void end() {
+    if (_depth > 0) _depth--;
+  }
+}
 
 /// clear all data
 Future<void> clearAppdata() async {

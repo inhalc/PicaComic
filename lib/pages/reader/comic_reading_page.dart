@@ -202,6 +202,9 @@ class ComicReadingPage extends StatelessWidget {
   /// the full-resolution `ui.Image` objects and animated GIF codecs are owned
   /// by Flutter's process-wide ImageCache, so they survive the route pop.
   static void _releaseReaderImageCache() {
+    // Stop every animated decoder first. Otherwise a GIF can keep decoding
+    // frames (and repainting) even after the reader route has been popped.
+    ImageDecodeConfig.stopAllAnimations();
     final cache = PaintingBinding.instance.imageCache;
     cache.clear();
     cache.maximumSizeBytes = 64 * 1024 * 1024;
@@ -234,10 +237,10 @@ class ComicReadingPage extends StatelessWidget {
       //进入阅读器时清除内存中的缓存, 并且增大限制
       BaseImageProvider.clearCache();
       BaseImageProvider.setCacheSizeLimit(64 * 1024 * 1024);
-      // Animated GIFs in the reader are decoded frame by frame, and every
-      // frame triggers a setState()/repaint of the whole PhotoView page. Only
-      // decode the first frame unless the user explicitly enabled animation.
-      ImageDecodeConfig.playAnimation = appdata.settings[90] == "1";
+      // GIFs play through the throttled decoder (bounded frame rate, paused
+      // when off-screen, codec released on exit). settings[91] is the opt-out
+      // for users who prefer a static first frame.
+      ImageDecodeConfig.playAnimation = appdata.settings[91] != "1";
       final imageCache = PaintingBinding.instance.imageCache;
       imageCache.clear();
       imageCache.maximumSizeBytes = 128 * 1024 * 1024;

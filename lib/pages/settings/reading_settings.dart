@@ -133,9 +133,9 @@ class _ReadingSettingsState extends State<ReadingSettings> {
           },
         ),
         SwitchSetting(
-          title: "播放 GIF 动图动画".tl,
-          subTitle: "关闭时只显示首帧, 可避免大图/动图持续解码导致卡顿".tl,
-          settingsIndex: 90,
+          title: "仅显示 GIF 首帧".tl,
+          subTitle: "默认以限帧方式播放动图, 不会拖慢翻页; 开启后动图只显示静态首帧".tl,
+          settingsIndex: 91,
           icon: const Icon(Icons.animation),
         ),
         SwitchSetting(

@@ -56,9 +56,16 @@ extension DirectoryExtension on Directory{
   Future<int> get size async{
     if(!existsSync()) return 0;
     int total = 0;
-    for(var f in listSync(recursive: true)){
-      if(FileSystemEntity.typeSync(f.path)==FileSystemEntityType.file){
-        total += await File(f.path).length();
+    // `listSync(recursive: true)` materialises every entry in one list. With
+    // tens of thousands of cached pages that alone was enough to OOM the
+    // isolate (issues #202 / #259). `list()` streams directory by directory.
+    await for(final entity in list(recursive: true)){
+      if(entity is File){
+        try {
+          total += await entity.length();
+        } catch (_) {
+          // A file can be deleted by the cache eviction while we are counting.
+        }
       }
     }
     return total;
@@ -68,6 +75,43 @@ extension DirectoryExtension on Directory{
     newName = sanitizeFileName(newName);
     return renameSync(path.replaceLast(name, newName));
   }
+}
+
+bool _isDigitCodeUnit(int code) => code >= 0x30 && code <= 0x39;
+
+/// Natural file-name comparison: `2.jpg` sorts before `10.jpg`, so a comic
+/// with hundreds of pages keeps its original order (#262 / #300).
+int compareNaturalFileName(String a, String b) {
+  int i = 0;
+  int j = 0;
+  while (i < a.length && j < b.length) {
+    final aIsDigit = _isDigitCodeUnit(a.codeUnitAt(i));
+    final bIsDigit = _isDigitCodeUnit(b.codeUnitAt(j));
+    if (aIsDigit && bIsDigit) {
+      final aStart = i;
+      final bStart = j;
+      while (i < a.length && _isDigitCodeUnit(a.codeUnitAt(i))) {
+        i++;
+      }
+      while (j < b.length && _isDigitCodeUnit(b.codeUnitAt(j))) {
+        j++;
+      }
+      final aValue = int.tryParse(a.substring(aStart, i)) ?? 0;
+      final bValue = int.tryParse(b.substring(bStart, j)) ?? 0;
+      if (aValue != bValue) {
+        return aValue.compareTo(bValue);
+      }
+    } else {
+      final aCode = a.codeUnitAt(i);
+      final bCode = b.codeUnitAt(j);
+      if (aCode != bCode) {
+        return aCode.compareTo(bCode);
+      }
+      i++;
+      j++;
+    }
+  }
+  return (a.length - i).compareTo(b.length - j);
 }
 
 String sanitizeFileName(String fileName) {

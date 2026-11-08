@@ -8,6 +8,7 @@ import 'package:pica_comic/foundation/log.dart';
 import 'package:pica_comic/tools/extensions.dart';
 import 'package:pica_comic/tools/file_type.dart';
 import 'package:pica_comic/tools/io_extensions.dart';
+import 'package:pica_comic/tools/image_integrity.dart';
 import 'package:pica_comic/tools/translations.dart';
 
 import '../base.dart';
@@ -463,15 +464,38 @@ class _ImageDownloadWrapper {
         last = progress.currentBytes;
         if (progress.finished) {
           var data = progress.data ?? await progress.getFile().readAsBytes();
-          if (data.isNotEmpty){
-            var type = detectFileType(data);
-            var file = File("$path/$fileBaseName${type.ext}");
-            if (!await file.exists()) {
-              await file.create(recursive: true);
-            }
-            await file.writeAsBytes(data);
+          if (data.isEmpty) {
+            // A zero-byte "success" used to be counted as a downloaded page.
+            throw StateError('Downloaded image is empty');
           }
-          isFinished = true;
+          var type = detectFileType(data);
+          var ext = type.ext.isEmpty ? fallbackImageExtension(data) : type.ext;
+          if (ext.isEmpty) {
+            throw StateError('Downloaded image has an unrecognised format');
+          }
+          var file = File("$path/$fileBaseName$ext");
+          // Write to a temporary file first: an interrupted write must never
+          // leave a half-written page that looks like a completed download.
+          var temp = File("${file.path}.part");
+          try {
+            await temp.create(recursive: true);
+            await temp.writeAsBytes(data, flush: true);
+            if (await temp.length() != data.length) {
+              throw StateError('Downloaded image was not written completely');
+            }
+            if (await file.exists()) {
+              await file.delete();
+            }
+            await temp.rename(file.path);
+          } catch (_) {
+            await temp.deleteIgnoreError();
+            rethrow;
+          }
+          isFinished =
+              await file.exists() && await file.length() == data.length;
+          if (!isFinished) {
+            throw StateError('Downloaded image is missing after write');
+          }
         }
       }
     } catch (e) {

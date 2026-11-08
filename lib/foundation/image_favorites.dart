@@ -40,8 +40,10 @@ class ImageFavoriteManager{
       insert into image_favorites(id, title, cover, ep, page, other)
       values(?, ?, ?, ?, ?, ?);
     """, [favorite.id, favorite.title, favorite.imagePath, favorite.ep, favorite.page, jsonEncode(favorite.otherInfo)]);
-    Webdav.uploadData();
-    Future.microtask(() => StateController.findOrNull(tag: "me_page")?.update());
+    if (!ImportMode.active) {
+      Webdav.uploadData();
+      Future.microtask(() => StateController.findOrNull(tag: "me_page")?.update());
+    }
   }
 
   static List<ImageFavorite> getAll(){

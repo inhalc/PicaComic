@@ -15,7 +15,7 @@ extension AppTranslation on String {
 
   String get tl => _translate();
 
-  String get tlEN => translations["en_US"]![this] ?? this;
+  String get tlEN => translations["en_US"]?[this] ?? this;
 
   String tlParams(Map<String, String> values) {
     var res = _translate();
@@ -25,12 +25,23 @@ extension AppTranslation on String {
     return res;
   }
 
-  static late final Map<String, Map<String, String>> translations;
+  /// Never `late`: if the asset fails to load (or another initialiser throws
+  /// before this one runs), widgets calling `.tl` used to crash the whole app
+  /// with LateInitializationError before any page could be drawn (#291/#302).
+  /// An empty map simply falls back to the source string.
+  static Map<String, Map<String, String>> translations = {};
 
   static Future<void> init() async{
-    var data = await rootBundle.load("assets/translation.json");
-    var json = jsonDecode(utf8.decode(data.buffer.asUint8List()));
-    translations = { for (var e in json.entries) e.key : Map<String, String>.from(e.value) };
+    try {
+      var data = await rootBundle.load("assets/translation.json");
+      var json = jsonDecode(utf8.decode(data.buffer.asUint8List()));
+      translations = {
+        for (var e in json.entries) e.key: Map<String, String>.from(e.value)
+      };
+    } catch (_) {
+      // Keep the app usable with untranslated strings.
+      translations = {};
+    }
   }
 }
 

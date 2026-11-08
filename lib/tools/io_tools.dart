@@ -4,6 +4,7 @@ import 'dart:isolate';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
 import 'package:flutter_file_dialog/flutter_file_dialog.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pica_comic/base.dart';
@@ -11,6 +12,7 @@ import 'package:pica_comic/comic_source/comic_source.dart';
 import 'package:pica_comic/components/components.dart';
 import 'package:pica_comic/foundation/cache_manager.dart';
 import 'package:pica_comic/foundation/history.dart';
+import 'package:pica_comic/foundation/image_loader/base_image_provider.dart';
 import 'package:pica_comic/foundation/local_favorites.dart';
 import 'package:pica_comic/foundation/log.dart';
 import 'package:pica_comic/network/cookie_jar.dart';
@@ -420,6 +422,15 @@ Future<bool> importData([String? filePath]) async {
       return false;
     }
   }
+  // Replacing all user data invalidates the in-memory reader state. Release
+  // animated decoders and both image caches first, so the SQLite work below
+  // does not compete with hundreds of live codecs and frame timers.
+  ImageDecodeConfig.stopAllAnimations();
+  BaseImageProvider.clearCache();
+  final imageCache = PaintingBinding.instance.imageCache;
+  imageCache.clear();
+  imageCache.clearLiveImages();
+
   SingleInstanceCookieJar.instance?.dispose();
   DownloadManager().dispose();
   String data = '';
@@ -428,20 +439,33 @@ Future<bool> importData([String? filePath]) async {
       var path = data[0];
       ZipFile.openAndExtract(data[1], "$path/dataTemp");
       var downloadPath = Directory(data[2]);
+      // Older exports put comic folders at the archive root. They all used to
+      // be renamed to the *same* `download` path, so the second one failed
+      // with "Directory not empty" (errno 39) and the import crashed (#193).
+      var downloadRoot = Directory("$path/dataTemp/download");
+      if (!downloadRoot.existsSync()) {
+        downloadRoot.createSync(recursive: true);
+      }
       List<FileSystemEntity> contents = Directory("$path/dataTemp").listSync();
       for (FileSystemEntity item in contents) {
-        if (item is Directory) {
-          if (item.name != "comic_source" && item.name != "download") {
-            item.renameSync('$path/dataTemp/download');
+        if (item is Directory &&
+            item.name != "comic_source" &&
+            item.name != "download") {
+          var target = Directory("${downloadRoot.path}/${item.name}");
+          if (target.existsSync()) {
+            target.deleteSync(recursive: true);
           }
+          item.renameSync(target.path);
         }
       }
       final json = File("$path/dataTemp/appdata").readAsStringSync();
-      int fileVersion = int.parse(
-          ((const JsonDecoder().convert(json))["settings"] as List)
-                  .elementAtOrNull(46) ??
-              "1");
-      if (fileVersion <= int.parse(data[3]) && data[4] == "1") {
+      int fileVersion = int.tryParse(
+              ((const JsonDecoder().convert(json))["settings"] as List)
+                      .elementAtOrNull(46)
+                      ?.toString() ??
+                  "") ??
+          1;
+      if (fileVersion <= (int.tryParse(data[3]) ?? 0) && data[4] == "1") {
         return json;
       }
       var localFavorite = File('$path/dataTemp/localFavorite');
@@ -482,32 +506,73 @@ Future<bool> importData([String? filePath]) async {
     Log.error("importData", "$e\n$s");
     return false;
   } finally {
-    await ComicSource.reload();
-    SingleInstanceCookieJar.instance?.init();
-    await DownloadManager().init();
-    Directory("$path/dataTemp").deleteSync(recursive: true);
+    try {
+      await ComicSource.reload();
+      SingleInstanceCookieJar.instance?.init();
+      await DownloadManager().init();
+    } catch (e, s) {
+      Log.error("importData", "post-import init failed: $e\n$s");
+    }
+    try {
+      final temp = Directory("$path/dataTemp");
+      if (temp.existsSync()) {
+        // Asynchronous: a recursive synchronous delete on the UI isolate can
+        // itself cause an ANR right after a large import.
+        await temp.delete(recursive: true);
+      }
+    } catch (_) {
+      // leftover temp files are harmless and cleaned on the next import
+    }
   }
-  var json = const JsonDecoder().convert(data);
-  int fileVersion =
-      int.parse((json["settings"] as List).elementAtOrNull(46) ?? "1");
-  int appVersion = int.parse(appdata.settings[46]);
-  if (fileVersion <= appVersion && enableCheck) {
-    LogManager.addLog(
-        LogLevel.info,
-        "Appdata",
-        "The data file version is $fileVersion, while the app data version is "
-            "$appVersion\nStop importing data");
-  }
-  var dataReadRes = appdata.readDataFromJson(json);
-  if (!dataReadRes) {
-    LogManager.addLog(
-        LogLevel.error, "Appdata", "appdata.readDataFromJson(json) failed");
+
+  ImportMode.begin();
+  try {
+    final json = const JsonDecoder().convert(data);
+    int fileVersion = int.tryParse(
+            (json["settings"] as List).elementAtOrNull(46)?.toString() ?? "") ??
+        1;
+    int appVersion = int.tryParse(appdata.settings[46]) ?? 0;
+    if (fileVersion <= appVersion && enableCheck) {
+      LogManager.addLog(
+          LogLevel.info,
+          "Appdata",
+          "The data file version is $fileVersion, while the app data version is "
+              "$appVersion\nStop importing data");
+    }
+    var dataReadRes = appdata.readDataFromJson(json);
+    if (!dataReadRes) {
+      LogManager.addLog(
+          LogLevel.error, "Appdata", "appdata.readDataFromJson(json) failed");
+      return false;
+    }
+    await LocalFavoritesManager().readData();
+    await HistoryManager().tryUpdateDb();
+    return true;
+  } catch (e, s) {
+    // Never let an import error escape as an unhandled Future error: the
+    // caller's loading dialog would then stay on screen forever.
+    Log.error("importData", "$e\n$s");
     return false;
+  } finally {
+    try {
+      ImportMode.end();
+      LocalFavoritesManager().updateUI();
+    } catch (e, s) {
+      Log.error("importData", "post-import refresh failed: $e\n$s");
+    }
+    // Persist appdata (including the onboarding flag) only after every merge
+    // has finished, and await the write. Previously this was an unawaited
+    // writeData() inside readDataFromJson(); an ANR / force-stop during the
+    // import could lose it, and the next launch showed the first-run wizard.
+    // Even a partially failed import must not reset onboarding.
+    appdata.firstUse[3] = "1";
+    appdata.welcomeCompleted = true;
+    try {
+      await appdata.writeData(false);
+    } catch (e, s) {
+      Log.error("importData", "persist appdata failed: $e\n$s");
+    }
   }
-  await LocalFavoritesManager().readData();
-  LocalFavoritesManager().updateUI();
-  await HistoryManager().tryUpdateDb();
-  return true;
 }
 
 void saveLog(String log) async {

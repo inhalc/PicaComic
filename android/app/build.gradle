@@ -55,9 +55,9 @@ android {
     }
 
     defaultConfig {
-        // Test build: separate application id so it can be installed next to
-        // the official release without wiping its data.
-        applicationId "com.github.pacalini.pica_comic.fix"
+        // Custom long-term build: same application id as the official release.
+        // Signed with the persistent local keystore declared in key.properties.
+        applicationId "com.github.pacalini.pica_comic"
         // You can update the following values to match your application needs.
         // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
         minSdkVersion flutter.minSdkVersion

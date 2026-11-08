@@ -296,6 +296,14 @@ class LocalFavoritesManager {
 
   Future<void> init() async {
     _db = sqlite3.open("${App.dataPath}/local_favorite.db");
+    // A bulk import writes thousands of rows. WAL + NORMAL keeps each write
+    // from forcing an fsync on the UI isolate (which caused an ANR).
+    try {
+      _db.execute("PRAGMA journal_mode = WAL;");
+      _db.execute("PRAGMA synchronous = NORMAL;");
+    } catch (_) {
+      // Fall back to the default journal mode if WAL is unavailable.
+    }
     _checkAndCreate();
     await readData();
   }
@@ -360,6 +368,9 @@ class LocalFavoritesManager {
   }
 
   void updateUI() {
+    if (ImportMode.active) {
+      return;
+    }
     Future.microtask(
         () => StateController.findOrNull(tag: "me page")?.update());
     Future.microtask(
@@ -395,6 +406,9 @@ class LocalFavoritesManager {
   }
 
   Future<void> saveData() async {
+    if (ImportMode.active) {
+      return;
+    }
     Webdav.uploadData();
   }
 
@@ -710,6 +724,12 @@ class LocalFavoritesManager {
     }
     updateUI();
     saveData();
+    if (ImportMode.active) {
+      // Covers are fetched lazily by getCover(). Downloading hundreds of
+      // them during an import floods the event loop with network + disk IO
+      // and freezes the main isolate.
+      return;
+    }
     try {
       var file =
           (await (ImageManager().getImage(comic.coverPath)).last).getFile();

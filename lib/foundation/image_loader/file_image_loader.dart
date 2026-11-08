@@ -29,9 +29,8 @@ class FileImageProvider extends ImageProvider<FileImageProvider> {
       // images, otherwise they keep decoding frames after the reader is closed.
       return SingleFrameImageStreamCompleter(codec);
     }
-    return MultiFrameImageStreamCompleter(
-      codec: codec,
-      scale: 1.0,
+    return ThrottledImageStreamCompleter(
+      codec,
       debugLabel: key.toString(),
     );
   }

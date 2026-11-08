@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'package:pica_comic/base.dart';
 import 'package:pica_comic/comic_source/comic_source.dart';
 import 'package:pica_comic/foundation/app.dart';
 import 'package:pica_comic/foundation/log.dart';
@@ -197,50 +198,85 @@ class HistoryManager {
       return;
     }
     var db = sqlite3.open(file.path);
-    var newHistory0 = db.select("""
-      select * from history
-      order by time DESC;
-    """);
-    var newHistory =
-        newHistory0.map((element) => History.fromRow(element)).toList();
-    if (file.existsSync()) {
-      var skips = 0;
-      for (var history in newHistory) {
-        if (findSync(history.target) == null) {
-          addHistory(history);
-          LogManager.addLog(LogLevel.info, "HistoryManager",
-              "merge history ${history.target}");
-        } else {
-          skips++;
-        }
-      }
-      LogManager.addLog(LogLevel.info, "HistoryManager",
-          "merge history, skipped $skips, added ${newHistory.length - skips}");
+    try {
+      var newHistory0 = db.select("""
+        select * from history
+        order by time DESC;
+      """);
+      var newHistory =
+          newHistory0.map((element) => History.fromRow(element)).toList();
 
-      //import favorite images
-      skips = 0;
-      ImageFavoriteManager.init();
-      var newImages0 = db.select("select * from image_favorites;");
-      var newImages = newImages0.map((e) =>
-          ImageFavorite(e["id"], e["cover"], e["title"], e["ep"], e["page"], jsonDecode(e["other"]))).toList();
-      for (var image in newImages) {
-        if (ImageFavoriteManager.exist(image.id, image.ep, image.page)) {
-          skips++;
-        } else {
-          ImageFavoriteManager.add(image);
-          LogManager.addLog(LogLevel.info, "HistoryManager",
-              "merge favorite image ep ${image.ep} page ${image.page} @ ${image.id}");
+      // sqlite3 is a synchronous FFI binding running on the main isolate.
+      // A large import used to perform one fsync, one WebDAV upload and one
+      // full-table cache rebuild *per row*, which froze the UI (ANR).
+      // Wrap the merge in a single transaction and defer side effects.
+      ImportMode.begin();
+      updateCache();
+      _db.execute("BEGIN TRANSACTION;");
+      try {
+        var skips = 0;
+        for (var history in newHistory) {
+          if (findSync(history.target) == null) {
+            await addHistory(history);
+          } else {
+            skips++;
+          }
         }
+        LogManager.addLog(LogLevel.info, "HistoryManager",
+            "merge history, skipped $skips, added ${newHistory.length - skips}");
+
+        // import favorite images
+        skips = 0;
+        ImageFavoriteManager.init();
+        List<dynamic> newImages0;
+        try {
+          newImages0 = db.select("select * from image_favorites;");
+        } catch (_) {
+          // exported by an older version without the table
+          newImages0 = <dynamic>[];
+        }
+        var newImages = newImages0
+            .map((e) => ImageFavorite(e["id"], e["cover"], e["title"], e["ep"],
+                e["page"], jsonDecode(e["other"])))
+            .toList();
+        for (var image in newImages) {
+          if (ImageFavoriteManager.exist(image.id, image.ep, image.page)) {
+            skips++;
+          } else {
+            ImageFavoriteManager.add(image);
+          }
+        }
+        LogManager.addLog(LogLevel.info, "HistoryManager",
+            "merge favorite images, skipped $skips, added ${newImages.length - skips}");
+        _db.execute("COMMIT;");
+      } catch (e) {
+        _db.execute("ROLLBACK;");
+        rethrow;
+      } finally {
+        ImportMode.end();
+        updateCache();
+        saveData();
       }
-      LogManager.addLog(LogLevel.info, "HistoryManager",
-          "merge favorite images, skipped $skips, added ${newImages.length - skips}");
+    } finally {
+      db.dispose();
+      if (file.existsSync()) {
+        file.deleteSync();
+      }
     }
-    db.dispose();
-    file.deleteSync();
   }
 
   Future<void> init() async {
     _db = sqlite3.open("${App.dataPath}/history.db");
+
+    // WAL keeps a bulk import to a single fsync instead of one per row, and
+    // avoids blocking reads while records are being merged.
+    try {
+      _db.execute("PRAGMA journal_mode = WAL;");
+      _db.execute("PRAGMA synchronous = NORMAL;");
+    } catch (_) {
+      // Older / read-only databases may not support WAL; normal operation
+      // still works without it.
+    }
 
     _db.execute("""
         create table if not exists history  (
@@ -325,8 +361,13 @@ class HistoryManager {
         where target == ?;
       """, [newItem.target]);
     }
-    saveData();
-    updateCache();
+    if (ImportMode.active) {
+      // One cache refresh / WebDAV sync is done after the whole import.
+      _cachedHistory?[newItem.target] = true;
+    } else {
+      saveData();
+      updateCache();
+    }
   }
 
   ///退出阅读器时调用此函数, 修改阅读位置

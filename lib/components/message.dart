@@ -152,10 +152,13 @@ class LoadingDialogController {
       return;
     }
     closed = true;
-    if (closeDialog == null) {
-      Future.microtask(closeDialog!);
+    final callback = closeDialog;
+    if (callback == null) {
+      // The route may not have finished building yet. Retry instead of
+      // dereferencing null (which threw and left the dialog stuck forever).
+      Future.microtask(() => closeDialog?.call());
     } else {
-      closeDialog!();
+      callback();
     }
   }
 }

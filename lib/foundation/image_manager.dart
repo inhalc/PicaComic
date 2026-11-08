@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -17,11 +18,11 @@ import 'package:pica_comic/network/eh_network/get_gallery_id.dart';
 import 'package:pica_comic/network/hitomi_network/hitomi_models.dart';
 import 'package:pica_comic/tools/extensions.dart';
 import 'package:pica_comic/tools/file_type.dart';
+import 'package:pica_comic/tools/image_integrity.dart';
 
 import '../base.dart';
 import '../network/eh_network/eh_main_network.dart';
 import '../network/hitomi_network/image.dart';
-import '../network/jm_network/jm_network.dart';
 import '../network/jm_network/headers.dart';
 import '../network/res.dart';
 
@@ -53,6 +54,23 @@ class ImageManager {
 
   final dio = logDio(BaseOptions())
     ..interceptors.add(CookieManagerSql(SingleInstanceCookieJar.instance!));
+
+  Dio? _ehImageDio;
+
+  /// Reuse one Dio for e-hentai image downloads. Building a fresh Dio for
+  /// every single page throws away the HTTP connection pool, so each image
+  /// used to pay for a new DNS/TLS handshake against an already slow server.
+  Dio get ehImageDio {
+    final client = _ehImageDio ??= logDio(BaseOptions(
+      followRedirects: true,
+      connectTimeout: const Duration(seconds: 8),
+      receiveTimeout: const Duration(seconds: 20),
+    ));
+    // Cookies may change after a login; refresh them for each image.
+    client.options.headers["user-agent"] = webUA;
+    client.options.headers["cookie"] = EhNetwork().cookiesStr;
+    return client;
+  }
 
   int ehgtLoading = 0;
 
@@ -118,6 +136,10 @@ class ImageManager {
         yield progress;
         loadingItems[url] = progress;
       }
+      // `expectedBytes` is Content-Length + 1 (used to keep the progress
+      // bar from reaching 100% mid-stream), so subtract one for the check.
+      checkImageComplete(
+          imageData.length, expectedBytes == null ? null : expectedBytes - 1, url);
       await cachingFile.close();
       var ext = getExt(dioRes);
       CacheManager().setType(key, ext);
@@ -174,13 +196,7 @@ class ImageManager {
       final savePath = cachingFile.file.path;
       yield DownloadProgress(0, 100, key, savePath);
 
-      final options = BaseOptions(
-          followRedirects: true,
-          connectTimeout: const Duration(seconds: 8),
-          receiveTimeout: const Duration(seconds: 20),
-          headers: {"user-agent": webUA, "cookie": EhNetwork().cookiesStr});
-
-      var dio = logDio(options);
+      final dio = ehImageDio;
 
       // Get imgKey
       final readerLink =
@@ -246,7 +262,9 @@ class ImageManager {
       var imgKey = readerLink.split('/')[4];
 
       int totalBytes = 0;
-      List<int> data = [];
+      // BytesBuilder avoids the extra full-size copy that Uint8List.fromList
+      // used to make for every (often very large) GIF.
+      BytesBuilder data = BytesBuilder(copy: false);
 
       if (gallery.auth?["mpvKey"] != null) {
         Future<(String image, String nl)> getImageFromApi([String? nl]) async {
@@ -364,7 +382,7 @@ class ImageManager {
 
         while (true) {
           try {
-            data.clear();
+            data = BytesBuilder(copy: false);
             cachingFile.reset();
             if (image == "") {
               throw "empty url";
@@ -392,16 +410,19 @@ class ImageManager {
             await for (var b in stream) {
               await cachingFile.writeBytes(b);
               currentBytes += b.length;
-              data.addAll(b);
+              data.add(b);
               var progress = DownloadProgress(
                 currentBytes,
-                expectedBytes + 1,
+                imageProgressTarget(expectedBytes, currentBytes),
                 cacheKey,
                 savePath,
               );
               yield progress;
               loadingItems[cacheKey] = progress;
             }
+            // Retry a response that ended before Content-Length. Without
+            // this, a half-downloaded 10 MB original was cached as complete.
+            checkImageComplete(currentBytes, expectedBytes, image);
             totalBytes = currentBytes;
             break;
           } catch (e) {
@@ -426,14 +447,15 @@ class ImageManager {
       }
 
       await cachingFile.close();
-      var ext = detectFileType(data).ext.replaceFirst(('.'), '');
+      final bytes = data.takeBytes();
+      var ext = detectFileType(bytes).ext.replaceFirst(('.'), '');
       CacheManager().setType(key, ext);
       yield DownloadProgress(
         totalBytes,
         totalBytes,
         cacheKey,
         savePath,
-        Uint8List.fromList(data),
+        bytes,
         ext,
       );
     } catch (e, s) {
@@ -513,6 +535,7 @@ class ImageManager {
         yield progress;
         loadingItems[image.hash] = progress;
       }
+      checkImageComplete(currentBytes, expectedBytes, url);
       await cachingFile.close();
       var ext = getExt(res);
       CacheManager().setType(key, ext);
@@ -681,6 +704,7 @@ class ImageManager {
         yield progress;
         loadingItems[cacheKey] = progress;
       }
+      checkImageComplete(imageData.length, expectedBytes, url);
 
       Uint8List? result;
 
@@ -724,15 +748,23 @@ class ImageManager {
   }
 
   Future<void> wait(String cacheKey) {
-    int timeout = 50;
+    // Fast path: when nothing else is downloading this key, return immediately.
+    // The old implementation slept 300 ms unconditionally for *every* image,
+    // which added a fixed lag to each page on sources that already need
+    // several network round trips (e.g. e-hentai reader link + showkey + api).
+    if (!loadingItems.containsKey(cacheKey)) {
+      return Future.value();
+    }
+    int timeout = 100;
     return Future.doWhile(() async {
-      await Future.delayed(const Duration(milliseconds: 300));
-      timeout--;
-      if (timeout == 0) {
-        loadingItems.remove(cacheKey);
+      if (!loadingItems.containsKey(cacheKey)) {
         return false;
       }
-      return loadingItems[cacheKey] != null;
+      await Future.delayed(const Duration(milliseconds: 100));
+      timeout--;
+      // Never delete another request's in-flight marker: the old code removed
+      // it after 15 s, allowing two downloads to write the same cache file.
+      return timeout > 0 && loadingItems.containsKey(cacheKey);
     });
   }
 
@@ -794,6 +826,7 @@ class ImageManager {
         yield progress;
         loadingItems[cacheKey] = progress;
       }
+      checkImageComplete(imageData.length, expectedBytes, url);
 
       Uint8List? result;
 

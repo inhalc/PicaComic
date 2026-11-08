@@ -10,6 +10,7 @@ import 'package:pica_comic/network/file_downloader.dart';
 import 'package:pica_comic/network/http_client.dart';
 import 'package:zip_flutter/zip_flutter.dart';
 import 'dart:io';
+import '../../tools/io_extensions.dart';
 import '../../tools/io_tools.dart';
 import '../download.dart';
 import 'eh_main_network.dart';
@@ -342,21 +343,44 @@ class _IsolateDownloader{
           sendPort.send(status);
         }
         ZipFile.openAndExtract("$savePath/temp.zip", savePath);
-        var files = Directory(savePath).listSync();
-        files.sort((a, b) => a.path.compareTo(b.path));
-        int index = 0;
-        for(var entry in Directory(savePath).listSync()){
-          if(entry is File){
-            var name = entry.path.split(pathSep).last;
-            if(name.endsWith(".zip")){
-              entry.deleteSync();
-            } else if(!name.contains("cover")){
-              var baseName = index.toString();
-              index++;
-              var ext = name.split(".").last;
-              entry.renameSync("$savePath/$baseName.$ext");
-            }
+        // The old code sorted `files` but then iterated a *fresh* listSync(),
+        // so page numbering followed arbitrary filesystem order. It also
+        // compared paths as strings (1, 10, 100, 2 ...). Both made long
+        // gallery downloads come out shuffled (#262 / #300).
+        var files = Directory(savePath).listSync().whereType<File>().toList();
+        files.sort((a, b) => compareNaturalFileName(
+              a.path.split(pathSep).last,
+              b.path.split(pathSep).last,
+            ));
+        // Two passes: renaming straight to `0.jpg` could overwrite a source
+        // file that has not been processed yet.
+        var staged = <File>[];
+        var tempIndex = 0;
+        for(var entry in files){
+          var name = entry.path.split(pathSep).last;
+          if(name.endsWith(".zip")){
+            entry.deleteSync();
+            continue;
           }
+          if(name.contains("cover")){
+            continue;
+          }
+          var ext = name.split(".").last;
+          var temp = File("$savePath/.pica_tmp_${tempIndex++}.$ext");
+          if (temp.existsSync()) {
+            temp.deleteSync();
+          }
+          entry.renameSync(temp.path);
+          staged.add(temp);
+        }
+        for (var i = 0; i < staged.length; i++) {
+          var entry = staged[i];
+          var ext = entry.path.split(".").last;
+          var target = File("$savePath/$i.$ext");
+          if (target.existsSync()) {
+            target.deleteSync();
+          }
+          entry.renameSync(target.path);
         }
         sendPort.send("finish");
       }

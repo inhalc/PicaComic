@@ -119,7 +119,10 @@ class DownloadManager with _DownloadDb implements Listenable {
       );
       try {
         await copyDirectory(source, destination);
-        for (var i in source.listSync()) {
+        // Async enumeration keeps the UI responsive when the download folder
+        // contains hundreds of comics (issues #254 / #284).
+        final entries = await source.list().toList();
+        for (var i in entries) {
           await i.delete(recursive: true);
         }
       } catch (e) {
@@ -159,33 +162,36 @@ class DownloadManager with _DownloadDb implements Listenable {
   Future<void> _initDb() async {
     var oldData = <String, DownloadedItem>{};
     if (!File("$path/download.db").existsSync()) {
-      for (var entry in Directory(path!).listSync()) {
+      // Only the top level is enumerated, and asynchronously: a large
+      // downloaded library used to block the UI isolate for seconds.
+      final entries = await Directory(path!).list().toList();
+      for (var entry in entries) {
         if (entry is Directory) {
           var infoFile = File("${entry.path}/info.json");
           if (infoFile.existsSync()) {
             var id = entry.name;
-            var json = infoFile.readAsStringSync();
-            var time = infoFile.lastModifiedSync();
+            var json = await infoFile.readAsString();
+            var time = await infoFile.lastModified();
             var comic = _getComicFromJson(id, json, time);
             if (comic != null) {
-              infoFile.delete();
-              var directory = comic.name;
-              int i = -1;
-              while (entry is Directory) {
+              await infoFile.delete();
+              var current = entry;
+              for (var attempt = 0; attempt <= 20; attempt++) {
+                var directory = attempt == 0
+                    ? comic.name
+                    : "${comic.name}${attempt - 1}";
                 try {
-                  entry = entry.renameX(directory);
+                  current = current.renameX(directory);
                   break;
                 } catch (e) {
-                  i++;
-                  if(i > 20) {
+                  if (attempt == 20) {
                     // it seems that the error is unrelated to the directory name
-                    Log.error("IO", "Failed to rename directory: Trying rename ${entry.name} to ${comic.name}\n$e");
-                    break;
+                    Log.error("IO",
+                        "Failed to rename directory: Trying rename ${current.name} to ${comic.name}\n$e");
                   }
-                  directory = comic.name + i.toString();
                 }
               }
-              oldData[entry.name] = comic;
+              oldData[current.name] = comic;
             }
           }
         }

@@ -737,10 +737,26 @@ class EhNetwork {
     }
   }
 
-  Set<String> loadingReaderLinks = {};
+  /// In-flight gallery requests. Previously every concurrent image load
+  /// spin-waited 200 ms and then issued its *own* HTTP request for the same
+  /// gallery page, so precaching N pages produced N identical round trips.
+  final Map<String, Future<Res<List<String>>>> _readerLinkRequests = {};
+
+  /// Short-lived result cache so sequential page turns reuse the parsed list.
+  /// E-hentai rotates image keys, so entries expire after two minutes.
+  final Map<String, _ReaderLinksCache> _readerLinksCache = {};
+
+  static const Duration _readerLinksTTL = Duration(minutes: 2);
+
+  void invalidateReaderLinks(String gLink) {
+    _readerLinksCache.removeWhere((url, _) => url.startsWith(gLink));
+  }
 
   Future<Res<String>> getReaderLink(String gLink, int page) async {
     var res = await _getReaderLinks(gLink, 1);
+    if (res.error) {
+      return Res.fromErrorRes(res);
+    }
     if (page <= res.data.length) {
       return Res(res.data[page - 1]);
     }
@@ -755,28 +771,43 @@ class EhNetwork {
   }
 
   /// page starts from 1
-  Future<Res<List<String>>> _getReaderLinks(String link, int page) async {
-    String url = link;
-    if (page != 1) {
-      url = url.contains("?") ? "$url&p=${page - 1}" : "$url?p=${page - 1}";
+  Future<Res<List<String>>> _getReaderLinks(String link, int page) {
+    final url = page == 1
+        ? link
+        : (link.contains("?") ? "$link&p=${page - 1}" : "$link?p=${page - 1}");
+
+    final cached = _readerLinksCache[url];
+    if (cached != null &&
+        DateTime.now().difference(cached.time) < _readerLinksTTL) {
+      return Future.value(Res<List<String>>(cached.urls));
     }
-    while (loadingReaderLinks.contains(url)) {
-      await Future.delayed(const Duration(milliseconds: 200));
+
+    // Share a single request between all images loading at the same time.
+    final pending = _readerLinkRequests[url];
+    if (pending != null) {
+      return pending;
     }
-    loadingReaderLinks.add(url);
+    final future = _fetchReaderLinks(url);
+    _readerLinkRequests[url] = future;
+    return future.whenComplete(() => _readerLinkRequests.remove(url));
+  }
+
+  Future<Res<List<String>>> _fetchReaderLinks(String url) async {
     var res = await request(url);
-    loadingReaderLinks.remove(url);
     if (res.error) {
       return Res(null, errorMessage: res.errorMessage);
     }
     try {
-      var urls_ = <String>[];
+      var urls = <String>[];
       var temp = parse(res.data);
       var links = temp.querySelectorAll("div#gdt > a");
       for (var link in links) {
-        urls_.add(link.attributes["href"]!);
+        urls.add(link.attributes["href"]!);
       }
-      return Res(urls_);
+      if (urls.isNotEmpty) {
+        _readerLinksCache[url] = _ReaderLinksCache(urls, DateTime.now());
+      }
+      return Res(urls);
     } catch (e, s) {
       LogManager.addLog(LogLevel.error, "Data Analysis", "$e\n$s");
       return Res(null, errorMessage: e.toString());
@@ -1205,4 +1236,11 @@ class EhNetwork {
       return Res.error(e.toString());
     }
   }
+}
+
+class _ReaderLinksCache {
+  final List<String> urls;
+  final DateTime time;
+
+  _ReaderLinksCache(this.urls, this.time);
 }

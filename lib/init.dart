@@ -34,6 +34,10 @@ import 'network/nhentai_network/nhentai_main_network.dart';
 Future<void> init() async {
   try {
     await App.init();
+    // Load translations before anything else can render a widget. Sharing a
+    // Future.wait with unrelated initialisers meant one failure left the
+    // translation table uninitialised and the app could not be opened.
+    await AppTranslation.init();
     io.File? logFile = io.File("${App.dataPath}/log.txt");
     if(App.isAndroid) {
       var externalDirectory = await getExternalStorageDirectory();
@@ -83,7 +87,6 @@ Future<void> init() async {
       JmNetwork().init(),
       LocalFavoritesManager().init(),
       HistoryManager().init(),
-      AppTranslation.init(),
     ]);
     CacheManager().setLimitSize(appdata.appSettings.cacheLimit);
   } catch (e, s) {

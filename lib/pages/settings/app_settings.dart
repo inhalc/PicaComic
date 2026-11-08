@@ -577,14 +577,19 @@ void importDataSetting(BuildContext context) {
                   onPressed: () {
                     App.globalBack();
                     var dialog = showLoadingDialog(context, allowCancel: false);
-                    importData().then((v) {
-                      dialog.close();
-                      if (v) {
-                        showToast(message: "成功导入".tl);
-                      } else {
+                    () async {
+                      try {
+                        final v = await importData();
+                        showToast(
+                            message: v ? "成功导入".tl : "导入失败".tl);
+                      } catch (e) {
                         showToast(message: "导入失败".tl);
+                      } finally {
+                        // Always dismiss the dialog, even if the import
+                        // throws; otherwise the app looks permanently frozen.
+                        dialog.close();
                       }
-                    });
+                    }();
                   },
                   child: Text("继续".tl))
             ],

@@ -569,7 +569,9 @@
     "此功能已不再受支持": "此功能已不再受支援",
     "请勿反馈相关问题": "請勿回饋相關問題",
     "播放 GIF 动图动画": "播放 GIF 動畫",
-    "关闭时只显示首帧, 可避免大图/动图持续解码导致卡顿": "關閉時只顯示首幀, 可避免大圖/動圖持續解碼造成卡頓"
+    "关闭时只显示首帧, 可避免大图/动图持续解码导致卡顿": "關閉時只顯示首幀, 可避免大圖/動圖持續解碼造成卡頓",
+    "仅显示 GIF 首帧": "僅顯示 GIF 首幀",
+    "默认以限帧方式播放动图, 不会拖慢翻页; 开启后动图只显示静态首帧": "預設以限幀方式播放動圖, 不會拖慢翻頁; 開啟後動圖只顯示靜態首幀"
   },
   "en_US": {
     "有可用更新": "Updates available",
@@ -1145,6 +1147,8 @@
     "此功能已不再受支持": "This feature is no longer supported",
     "请勿反馈相关问题": "Please DO NOT report related issues",
     "播放 GIF 动图动画": "Play animated GIFs",
-    "关闭时只显示首帧, 可避免大图/动图持续解码导致卡顿": "When off, only the first frame is shown; avoids jank caused by continuous decoding of large/animated images"
+    "关闭时只显示首帧, 可避免大图/动图持续解码导致卡顿": "When off, only the first frame is shown; avoids jank caused by continuous decoding of large/animated images",
+    "仅显示 GIF 首帧": "Show only the first GIF frame",
+    "默认以限帧方式播放动图, 不会拖慢翻页; 开启后动图只显示静态首帧": "By default animations play at a capped frame rate without slowing page turns; turn this on to freeze GIFs on their first frame"
   }
 }
