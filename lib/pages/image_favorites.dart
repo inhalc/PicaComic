@@ -246,6 +246,11 @@ class _ImageProvider extends BaseImageProvider<_ImageProvider> {
   @override
   String get key => image.id + image.ep.toString() + image.page.toString();
 
+  /// Favorites keep their own copy under `dataPath/images`; [key] here is not
+  /// a [CacheManager] key, so the disk-cache fast path must stay disabled.
+  @override
+  String? get diskCacheKey => null;
+
   @override
   Future<Uint8List> load(StreamController<ImageChunkEvent> chunkEvents) async {
     if (File(image.imagePath).existsSync()) {

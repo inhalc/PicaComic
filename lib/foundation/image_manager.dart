@@ -35,6 +35,17 @@ class BadRequestException {
   String toString() => message;
 }
 
+/// Abort an image response that stops delivering bytes.
+///
+/// Dio has no read timeout by default and the underlying [HttpClient] only
+/// sets a *connection* timeout, so a connection that dies after the headers
+/// (a VPN node dropping, a NAT table flush) keeps the request — and the
+/// download slot it holds — alive for minutes or forever. Every image then
+/// waits behind a handful of dead sockets, which looks exactly like "the app
+/// stopped loading images and does not even read the cache" until a restart.
+/// 20 s without a single byte is never a healthy image download.
+const Duration kImageStallTimeout = Duration(seconds: 20);
+
 class ImageManager {
   static ImageManager? cache;
 
@@ -52,7 +63,10 @@ class ImageManager {
 
   ImageManager._create();
 
-  final dio = logDio(BaseOptions())
+  /// Shared client for image downloads. An explicit connect timeout keeps a
+  /// dead VPN node from parking a request — and the download slot it holds —
+  /// for minutes.
+  final dio = logDio(BaseOptions(connectTimeout: const Duration(seconds: 10)))
     ..interceptors.add(CookieManagerSql(SingleInstanceCookieJar.instance!));
 
   Dio? _ehImageDio;
@@ -128,7 +142,7 @@ class ImageManager {
       } catch (e) {
         //忽略
       }
-      await for (var res in dioRes.data!.stream) {
+      await for (var res in dioRes.data!.stream.timeout(kImageStallTimeout)) {
         imageData.addAll(res);
         await cachingFile.writeBytes(res);
         var progress = DownloadProgress(imageData.length,
@@ -395,7 +409,7 @@ class ImageManager {
                     "text/html; charset=UTF-8") {
               throw ImageExceedError();
             }
-            var stream = res.data!.stream;
+            var stream = res.data!.stream.timeout(kImageStallTimeout);
             int? expectedBytes;
             try {
               expectedBytes =
@@ -513,7 +527,7 @@ class ImageManager {
 
       var res = await dio.get<ResponseBody>(url,
           options: Options(responseType: ResponseType.stream));
-      var stream = res.data!.stream;
+      var stream = res.data!.stream.timeout(kImageStallTimeout);
       int? expectedBytes;
       try {
         expectedBytes = int.parse(res.data!.headers["Content-Length"]![0]);
@@ -599,7 +613,7 @@ class ImageManager {
             (res.headers["Content-Type"] ?? res.headers["content-type"])?[0];
         final contentLength = res.data!.contentLength;
         expectedBytes = contentLength == -1 ? null : contentLength;
-        var stream = res.data!.stream;
+        var stream = res.data!.stream.timeout(kImageStallTimeout);
         await for (var b in stream) {
           //不直接写入文件, 因为需要对图片进行重组, 处理完成后再写入
           bytes.addAll(b);
@@ -705,7 +719,7 @@ class ImageManager {
 
       bool shouldModifyData = config['onResponse'] != null;
 
-      await for (var data in res.data!.stream) {
+      await for (var data in res.data!.stream.timeout(kImageStallTimeout)) {
         if (!shouldModifyData) {
           await caching.writeBytes(data);
         }
@@ -831,7 +845,7 @@ class ImageManager {
 
       bool shouldModifyData = config['onResponse'] != null;
 
-      await for (var data in res.data!.stream) {
+      await for (var data in res.data!.stream.timeout(kImageStallTimeout)) {
         if (!shouldModifyData) {
           await caching.writeBytes(data);
         }

@@ -47,6 +47,13 @@ class StreamImageProvider
     return await file.readAsBytes();
   }
 
+  /// [key] is built by `ReadingData.buildImageKey`, which mirrors the cache
+  /// key used by [ImageManager] for the same page (url, `galleryLink+page`,
+  /// hitomi hash, custom-source id...). It is therefore also the on-disk cache
+  /// key: a cached page can be decoded without taking a download slot.
+  @override
+  String? get diskCacheKey => key;
+
   @override
   Future<StreamImageProvider> obtainKey(ImageConfiguration configuration) {
     return SynchronousFuture(this);

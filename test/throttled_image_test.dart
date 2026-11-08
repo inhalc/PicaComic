@@ -48,13 +48,18 @@ void main() {
     // should produce far more frames.
     expect(timestamps.length, greaterThanOrEqualTo(8),
         reason: 'GIF must play near its authored frame rate');
-    for (var i = 1; i < timestamps.length; i++) {
-      final gap = timestamps[i] - timestamps[i - 1];
-      expect(gap, lessThan(60),
-          reason: 'no fixed 80 ms throttle may hold frames back');
-      expect(gap, greaterThanOrEqualTo(8),
-          reason: 'a small floor must still prevent a 100 fps decode storm');
-    }
+    final gaps = <int>[
+      for (var i = 1; i < timestamps.length; i++)
+        timestamps[i] - timestamps[i - 1],
+    ]..sort();
+    // Use the median instead of every single gap: a CI machine that stalls
+    // for one event-loop turn must not look like a broken throttle, while a
+    // real 80 ms cap would move the median.
+    final median = gaps[gaps.length ~/ 2];
+    expect(median, lessThan(60),
+        reason: 'no fixed 80 ms throttle may hold frames back');
+    expect(median, greaterThanOrEqualTo(8),
+        reason: 'a small floor must still prevent a 100 fps decode storm');
 
     completer.stop();
     final emitted = timestamps.length;

@@ -1,13 +1,15 @@
-import 'dart:async' show Completer, Future, StreamController,
-    StreamSubscription, scheduleMicrotask;
+import 'dart:async' show Future, StreamController, StreamSubscription,
+    scheduleMicrotask;
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:ui' as ui show Codec;
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:pica_comic/foundation/cache_manager.dart';
 import 'package:pica_comic/foundation/image_manager.dart';
+import 'package:pica_comic/foundation/image_loader/load_slot_limiter.dart';
 import 'package:pica_comic/foundation/log.dart';
 import 'package:pica_comic/tools/image_integrity.dart';
 
@@ -460,37 +462,48 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
             _cache[key.key] = cached;
             data = cached;
           } else {
-            // Back-pressure for very large originals: E-Hentai pages can be
-            // 10-15 MB each. Without a cap, precaching 5+ of them at once
-            // allocates hundreds of MB and stalls the whole app.
-            await _acquireLoadSlot();
-            Uint8List bytes;
-            try {
-              bytes = await load(chunkEvents);
-            } finally {
-              _releaseLoadSlot();
+            // A page that is already on disk must be readable even when the
+            // network pool is saturated. Reading it used to go through
+            // load() — and therefore through the download slot — so four
+            // stalled connections made *everything* blank, including pages
+            // that never needed the network.
+            final cachedBytes = await _readDiskCache(key);
+            if (cachedBytes != null) {
+              _rememberBytes(key, cachedBytes);
+              data = cachedBytes;
+            } else {
+              if (stop) break;
+              // Back-pressure for very large originals: E-Hentai pages can be
+              // 10-15 MB each. Without a cap, precaching 5+ of them at once
+              // allocates hundreds of MB and stalls the whole app.
+              final slot = await _loadSlots.acquire();
+              Uint8List bytes;
+              try {
+                bytes = await load(chunkEvents);
+              } finally {
+                slot.release();
+              }
+              // Validate the exact bytes that will be decoded. Custom comic
+              // sources may rewrite the downloaded bytes via an onResponse
+              // hook inside the ImageManager stream; load() only consumes that
+              // stream and returns the already-rewritten final buffer, so this
+              // check always runs *after* onResponse and cannot reject a
+              // legitimately transformed image (issue #93).
+              final payloadError = imagePayloadError(bytes);
+              if (payloadError != null) {
+                // Drop both cache tiers so the retry loop below re-downloads
+                // instead of decoding the same HTML/JSON error page forever.
+                _cache.remove(key.key);
+                await CacheManager().delete(key.key);
+                throw Exception(
+                    'Invalid image payload for $key: $payloadError '
+                    '(length: ${bytes.length})');
+              }
+              // Insert before evicting, otherwise the cache grows past the
+              // limit by one (potentially very large GIF) on every load.
+              _rememberBytes(key, bytes);
+              data = bytes;
             }
-            // Validate the exact bytes that will be decoded. Custom comic
-            // sources may rewrite the downloaded bytes via an onResponse hook
-            // inside the ImageManager stream; load() only consumes that stream
-            // and returns the already-rewritten final buffer, so this check
-            // always runs *after* onResponse and cannot reject a legitimately
-            // transformed image (issue #93).
-            final payloadError = imagePayloadError(bytes);
-            if (payloadError != null) {
-              // Drop both cache tiers so the retry loop below re-downloads
-              // instead of decoding the same HTML/JSON error page forever.
-              _cache.remove(key.key);
-              await CacheManager().delete(key.key);
-              throw Exception('Invalid image payload for $key: $payloadError '
-                  '(length: ${bytes.length})');
-            }
-            _cache[key.key] = bytes;
-            _cacheSize += bytes.length;
-            // Evict *after* inserting, otherwise the cache grows past the
-            // limit by one (potentially very large GIF) on every load.
-            _checkCacheSize();
-            data = bytes;
           }
         } catch (e) {
           if(e.toString().contains("Maximum image loading limit reached")) {
@@ -554,28 +567,64 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
 
   static var _cacheSize = 0;
 
-  static const int _maxConcurrentLoads = 4;
-  static int _runningLoads = 0;
-  static final Queue<Completer<void>> _loadWaiters =
-      Queue<Completer<void>>();
+  /// Caps concurrent network downloads. Bounded waiting + slot leases keep a
+  /// stalled socket from freezing every image in the app (see
+  /// [LoadSlotLimiter]).
+  static final _loadSlots = LoadSlotLimiter(
+    onSoftLimit: (running) {
+      LogManager.addLog(
+        LogLevel.warning,
+        "ImageLoader",
+        "Download slot pool exhausted (running=$running). "
+            "A network request is probably stalled; letting this image load "
+            "bypass the cap instead of blocking the whole gallery.",
+      );
+    },
+  );
 
-  static Future<void> _acquireLoadSlot() async {
-    if (_runningLoads < _maxConcurrentLoads) {
-      _runningLoads++;
-      return;
+  /// Number of image downloads in flight, exposed for diagnostics.
+  static int get runningLoads => _loadSlots.running;
+
+  /// Cache key used by [CacheManager] for this provider, or `null` when the
+  /// provider does not use the shared image cache (e.g. favorites stored under
+  /// `dataPath/images`).
+  ///
+  /// This makes it possible to serve a page from disk *before* taking a
+  /// download slot, so cached pages keep working while the network is stuck.
+  String? get diskCacheKey => key;
+
+  static void _rememberBytes(BaseImageProvider key, Uint8List bytes) {
+    // Replacing an existing entry must not double count its size.
+    final replaced = _cache.remove(key.key);
+    if (replaced != null) {
+      _cacheSize -= replaced.length;
+      if (_cacheSize < 0) _cacheSize = 0;
     }
-    final waiter = Completer<void>();
-    _loadWaiters.add(waiter);
-    await waiter.future;
-    // The slot is handed over by _releaseLoadSlot, so _runningLoads stays
-    // unchanged here.
+    _cache[key.key] = bytes;
+    _cacheSize += bytes.length;
+    _checkCacheSize();
   }
 
-  static void _releaseLoadSlot() {
-    if (_loadWaiters.isNotEmpty) {
-      _loadWaiters.removeFirst().complete();
-    } else {
-      _runningLoads--;
+  /// Read [key] from the on-disk cache without touching the network pool.
+  ///
+  /// Returns `null` on a miss, on an unreadable file, or when the cached bytes
+  /// are not an image (a stale HTML error page must be dropped, not decoded).
+  static Future<Uint8List?> _readDiskCache(BaseImageProvider key) async {
+    final cacheKey = key.diskCacheKey;
+    if (cacheKey == null) return null;
+    try {
+      final path = await CacheManager().findCache(cacheKey);
+      if (path == null) return null;
+      final bytes = await File(path).readAsBytes();
+      if (bytes.isEmpty) return null;
+      if (imagePayloadError(bytes) != null) {
+        await CacheManager().delete(cacheKey);
+        return null;
+      }
+      return bytes;
+    } catch (_) {
+      // A broken cache must never stop the network path from running.
+      return null;
     }
   }
 

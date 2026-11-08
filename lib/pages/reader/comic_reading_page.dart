@@ -208,11 +208,14 @@ class ComicReadingPage extends StatelessWidget {
     final cache = PaintingBinding.instance.imageCache;
     cache.clear();
     cache.maximumSizeBytes = 64 * 1024 * 1024;
-    // Live images can still be referenced by the page that is being popped.
-    // Wait one frame before dropping the cache's live references.
+    // Clear again once the route is actually gone: images that were still
+    // referenced while `dispose` ran are releasable one frame later.
+    //
+    // Deliberately *not* calling `clearLiveImages()` here. It disposes images
+    // that a visible widget is still painting, so leaving the reader blanked
+    // every cover on the page behind it until that widget happened to rebuild.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       cache.clear();
-      cache.clearLiveImages();
     });
   }
 

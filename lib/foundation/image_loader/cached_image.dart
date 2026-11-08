@@ -60,4 +60,11 @@ class CachedImageProvider
 
   @override
   String get key => url;
+
+  /// [ImageManager.getImage] caches under the plain url, while
+  /// [ImageManager.getCustomThumbnail] prefixes it with the source key. Using
+  /// the same key here lets a cached thumbnail be served without waiting for a
+  /// download slot.
+  @override
+  String? get diskCacheKey => sourceKey == null ? url : "$sourceKey$url";
 }
