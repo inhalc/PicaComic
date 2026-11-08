@@ -279,6 +279,9 @@ class ComicReadingPage extends StatelessWidget {
       // alive would download the rest of the gallery after the reader closed.
       logic.chapterToken++;
       logic.stopPrefetch();
+      // [anchorRevision] is intentionally not disposed: a page-change callback
+      // can still fire while the route animates out, and a plain notifier with
+      // no listeners holds nothing worth releasing.
       ComicImage.clear();
       StateController.remove<ComicReadingPageLogic>();
       // 更新本地收藏

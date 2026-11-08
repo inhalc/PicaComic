@@ -21,6 +21,7 @@ class ComicImage extends StatefulWidget {
         this.gaplessPlayback = false,
         this.filterQuality = FilterQuality.medium,
         this.isAntiAlias = false,
+        this.refreshOn,
         Map<String, String>? headers,
         int? cacheWidth,
         int? cacheHeight,
@@ -61,6 +62,14 @@ class ComicImage extends StatefulWidget {
 
   final bool isAntiAlias;
 
+  /// Notified when the reader moves to another page.
+  ///
+  /// A page whose download was dropped while the user was elsewhere has no
+  /// pending callback, so without this it would only ask again when the stall
+  /// timer fires. Listening lets it retry as soon as it is the page in front
+  /// of the user.
+  final Listenable? refreshOn;
+
   static void clear() => _ComicImageState.clear();
 
   @override
@@ -88,7 +97,6 @@ class _ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   /// the cached image, joins the still-running download, or restarts it once
   /// the page is wanted again.
   Timer? _stallTimer;
-  int _stallRetries = 0;
 
   static final Map<int, Size> _cache = {};
 
@@ -99,11 +107,13 @@ class _ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _scrollAwareContext = DisposableBuildContext<State<ComicImage>>(this);
+    widget.refreshOn?.addListener(_onRefreshRequested);
   }
 
   @override
   void dispose() {
     assert(_imageStream != null);
+    widget.refreshOn?.removeListener(_onRefreshRequested);
     _stallTimer?.cancel();
     _stallTimer = null;
     WidgetsBinding.instance.removeObserver(this);
@@ -131,9 +141,23 @@ class _ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   @override
   void didUpdateWidget(ComicImage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.refreshOn != oldWidget.refreshOn) {
+      oldWidget.refreshOn?.removeListener(_onRefreshRequested);
+      widget.refreshOn?.addListener(_onRefreshRequested);
+    }
     if (widget.image != oldWidget.image) {
       _resolveImage();
     }
+  }
+
+  /// The reader moved: a page that has nothing to show yet asks again.
+  ///
+  /// Pages that already have their image, or are already failing, ignore this;
+  /// and resolving a page whose download is still running just rejoins the
+  /// in-flight load, so a healthy page pays nothing for being nudged.
+  void _onRefreshRequested() {
+    if (!mounted || _imageInfo != null || _lastException != null) return;
+    _resolveImage();
   }
 
   @override
@@ -169,23 +193,20 @@ class _ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     _scheduleStallRetry();
   }
 
-  /// Ask again later when nothing arrives, with a growing delay so a genuinely
-  /// slow page is not re-requested in a tight loop. [ImageProvider.resolve]
-  /// reuses the in-flight completer, so a normal slow download is not
-  /// duplicated.
+  /// Ask again while the page has neither an image nor an error.
+  ///
+  /// [ImageProvider.resolve] reuses the in-flight completer, so a healthy but
+  /// slow download is not duplicated and this costs nothing. It is what
+  /// restarts a page whose download was dropped while the user was elsewhere,
+  /// which otherwise has no completion callback at all. The delay is short
+  /// enough that scrolling back to such a page does not leave a spinner for
+  /// long.
   void _scheduleStallRetry() {
     _stallTimer?.cancel();
     _stallTimer = null;
     if (!mounted || _imageInfo != null || _lastException != null) return;
-    if (_stallRetries >= 6) return;
-    // The first retry is quick: when the reader jumps back to a page whose
-    // download was dropped, this is what starts it again. Resolving a page
-    // that is still downloading reuses the in-flight completer, so a healthy
-    // slow page pays nothing.
-    final delay = Duration(seconds: 2 + _stallRetries * 4);
-    _stallTimer = Timer(delay, () {
+    _stallTimer = Timer(const Duration(milliseconds: 2500), () {
       if (!mounted || _imageInfo != null || _lastException != null) return;
-      _stallRetries++;
       _resolveImage();
     });
   }
@@ -208,7 +229,6 @@ class _ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   }
 
   void _handleImageFrame(ImageInfo imageInfo, bool synchronousCall) {
-    _stallRetries = 0;
     _stallTimer?.cancel();
     _stallTimer = null;
     setState(() {

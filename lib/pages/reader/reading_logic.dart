@@ -66,6 +66,15 @@ class ComicReadingPageLogic extends StateController {
   /// see a mismatching token and abort instead of competing with the new one.
   int chapterToken = 0;
 
+  /// Bumped whenever the page in front of the user changes.
+  ///
+  /// A page that scrolled out of the preload window has its download aborted,
+  /// which ends without an image and without an error. Such a widget can stay
+  /// alive in the list's cache extent, so scrolling back to it would keep
+  /// showing a spinner until some retry timer fires. Listening to this lets the
+  /// image ask again the moment it is the page being looked at.
+  final ValueNotifier<int> anchorRevision = ValueNotifier<int>(0);
+
   ReaderPrefetchScheduler? _prefetchScheduler;
 
   /// How many pages ahead the user asked for (settings[28], 0-15).
@@ -127,8 +136,12 @@ class ComicReadingPageLogic extends StateController {
     if (next == prefetchAnchor && _prefetchScheduler != null) {
       return;
     }
+    final moved = next != prefetchAnchor;
     prefetchAnchor = next;
     _prefetchScheduler?.onAnchorChanged();
+    if (moved) {
+      anchorRevision.value++;
+    }
   }
 
   /// Starts (or restarts) preloading once the page list is available.

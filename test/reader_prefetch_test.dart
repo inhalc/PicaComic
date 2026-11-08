@@ -116,6 +116,26 @@ class _FakeCompleter extends ImageStreamCompleter {
   }
 }
 
+/// Counts how often a widget actually started a load.
+class _CountingProvider extends ImageProvider<_CountingProvider> {
+  int loadCount = 0;
+
+  @override
+  Future<_CountingProvider> obtainKey(ImageConfiguration configuration) =>
+      SynchronousFuture(this);
+
+  @override
+  ImageStreamCompleter loadImage(
+      _CountingProvider key, ImageDecoderCallback decode) {
+    loadCount++;
+    return _NeverCompletingCompleter();
+  }
+}
+
+/// A load that stays pending and never reports anything, like a page whose
+/// download was dropped silently by the priority policy.
+class _NeverCompletingCompleter extends ImageStreamCompleter {}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -229,5 +249,59 @@ void main() {
         reason: 'preloading resumes from the new position');
 
     logic.stopPrefetch();
+  });
+
+  test('moving to another page notifies the images once per move', () {
+    final data = _FakeReadingData(20);
+    final logic = ComicReadingPageLogic(1, data, 1, () {});
+    logic.urls = List.generate(20, (index) => 'url-$index');
+
+    var notifications = 0;
+    logic.anchorRevision.addListener(() => notifications++);
+
+    logic.updatePrefetchAnchor(5);
+    expect(notifications, 1);
+
+    logic.updatePrefetchAnchor(5);
+    expect(notifications, 1, reason: 'rebuilding the same page changes nothing');
+
+    logic.index = 9;
+    expect(notifications, 2, reason: 'a real move must wake the pages that '
+        'lost their download');
+    expect(logic.loadPriorityForPage(9), ImageLoadPriority.current);
+    logic.stopPrefetch();
+  });
+
+  testWidgets('a page that lost its download asks again as soon as it is seen',
+      (tester) async {
+    final provider = _CountingProvider();
+    final anchorRevision = ValueNotifier<int>(0);
+    addTearDown(anchorRevision.dispose);
+
+    await tester.pumpWidget(MaterialApp(
+      home: Center(
+        child: ComicImage(image: provider, refreshOn: anchorRevision),
+      ),
+    ));
+    await tester.pump();
+    expect(provider.loadCount, 1);
+
+    // The reader moved away: the provider aborts the download, evicts the key
+    // and reports nothing, so the widget keeps a spinner and has no callback
+    // left to learn that the page is wanted again.
+    imageCache.evict(provider);
+
+    await tester.pump();
+    expect(provider.loadCount, 1,
+        reason: 'nothing restarts on its own while the reader sits still');
+
+    anchorRevision.value++;
+    await tester.pump();
+    expect(provider.loadCount, 2,
+        reason: 'the page retries immediately instead of waiting 2.5s');
+
+    // A page that already has its image must not restart anything.
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 100));
   });
 }

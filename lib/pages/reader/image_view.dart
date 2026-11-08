@@ -53,6 +53,7 @@ extension ImageExt on ComicReadingPage {
           return ComicImage(
             filterQuality: FilterQuality.medium,
             image: image,
+            refreshOn: logic.anchorRevision,
             width: imageWidth,
             height: imageWidth * 1.2,
             fit: BoxFit.cover,
@@ -198,6 +199,7 @@ extension ImageExt on ComicReadingPage {
         key: ValueKey(imageIndex),
         image: createImageProvider(
             type, logic, imageIndex, target),
+        refreshOn: logic.anchorRevision,
         fit: fit,
         alignment: alignment,
       );
