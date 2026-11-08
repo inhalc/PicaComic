@@ -119,6 +119,7 @@ class Appdata {
     "gold-usergeneratedcontent.net", //87 hitomi cdn url
     "0", //88 jm auto checkin
     "2.0.11", //89 jm app version
+    "0", //90 阅读器中播放 GIF 动图动画(关闭时只显示首帧, 避免持续解码导致卡顿)
   ];
 
   /// 隐式数据, 用于存储一些不需要用户设置的数据, 此数据通常为某些组件的状态, 此设置不应当被同步

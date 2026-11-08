@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:pica_comic/network/download.dart';
+import 'package:pica_comic/foundation/image_loader/base_image_provider.dart';
 
 class FileImageProvider extends ImageProvider<FileImageProvider> {
 
@@ -22,8 +23,14 @@ class FileImageProvider extends ImageProvider<FileImageProvider> {
 
   @override
   ImageStreamCompleter loadImage(FileImageProvider key, ImageDecoderCallback decode) {
+    final codec = _loadAsync(key, decode: decode);
+    if (!ImageDecodeConfig.playAnimation) {
+      // Downloaded GIFs must go through the same single-frame path as network
+      // images, otherwise they keep decoding frames after the reader is closed.
+      return SingleFrameImageStreamCompleter(codec);
+    }
     return MultiFrameImageStreamCompleter(
-      codec: _loadAsync(key, decode: decode),
+      codec: codec,
       scale: 1.0,
       debugLabel: key.toString(),
     );

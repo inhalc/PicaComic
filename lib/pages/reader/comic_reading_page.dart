@@ -196,6 +196,23 @@ class ComicReadingPage extends StatelessWidget {
 
   bool get useDarkBackground => appdata.appSettings.useDarkBackground;
 
+  /// Drop the decoded images produced while reading.
+  ///
+  /// [BaseImageProvider.clearCache] only releases the compressed byte cache;
+  /// the full-resolution `ui.Image` objects and animated GIF codecs are owned
+  /// by Flutter's process-wide ImageCache, so they survive the route pop.
+  static void _releaseReaderImageCache() {
+    final cache = PaintingBinding.instance.imageCache;
+    cache.clear();
+    cache.maximumSizeBytes = 64 * 1024 * 1024;
+    // Live images can still be referenced by the page that is being popped.
+    // Wait one frame before dropping the cache's live references.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      cache.clear();
+      cache.clearLiveImages();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return StateBuilder<ComicReadingPageLogic>(initState: (logic) {
@@ -216,7 +233,14 @@ class ComicReadingPage extends StatelessWidget {
       }
       //进入阅读器时清除内存中的缓存, 并且增大限制
       BaseImageProvider.clearCache();
-      BaseImageProvider.setCacheSizeLimit(100 * 1024 * 1024);
+      BaseImageProvider.setCacheSizeLimit(64 * 1024 * 1024);
+      // Animated GIFs in the reader are decoded frame by frame, and every
+      // frame triggers a setState()/repaint of the whole PhotoView page. Only
+      // decode the first frame unless the user explicitly enabled animation.
+      ImageDecodeConfig.playAnimation = appdata.settings[90] == "1";
+      final imageCache = PaintingBinding.instance.imageCache;
+      imageCache.clear();
+      imageCache.maximumSizeBytes = 128 * 1024 * 1024;
       logic.openEpsView = openEpsDrawer;
       if (useDarkBackground) {
         Future.microtask(() =>
@@ -227,6 +251,12 @@ class ComicReadingPage extends StatelessWidget {
       //清除缓存并减小最大缓存
       BaseImageProvider.clearCache();
       BaseImageProvider.setCacheSizeLimit(50 * 1024 * 1024);
+      ImageDecodeConfig.playAnimation = true;
+      // Release the decoded (native/GPU) images as well. Without this the
+      // process-wide ImageCache keeps full-resolution pages and GIF codecs
+      // alive after leaving the reader, so the whole app stays laggy until
+      // the process is restarted.
+      _releaseReaderImageCache();
       logic.clearPhotoViewControllers();
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       SystemChrome.setPreferredOrientations(DeviceOrientation.values);

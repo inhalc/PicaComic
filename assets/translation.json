@@ -567,7 +567,9 @@
     "需要下载字体文件(10.1MB), 是否继续?": "需要下載字型文件(10.1MB), 是否繼續?",
     "更新漫画信息": "更新漫畫資訊",
     "此功能已不再受支持": "此功能已不再受支援",
-    "请勿反馈相关问题": "請勿回饋相關問題"
+    "请勿反馈相关问题": "請勿回饋相關問題",
+    "播放 GIF 动图动画": "播放 GIF 動畫",
+    "关闭时只显示首帧, 可避免大图/动图持续解码导致卡顿": "關閉時只顯示首幀, 可避免大圖/動圖持續解碼造成卡頓"
   },
   "en_US": {
     "有可用更新": "Updates available",
@@ -1141,6 +1143,8 @@
     "需要下载字体文件(10.1MB), 是否继续?": "Download missing fonts file (10.1MB), continue?",
     "更新漫画信息": "Update comic information",
     "此功能已不再受支持": "This feature is no longer supported",
-    "请勿反馈相关问题": "Please DO NOT report related issues"
+    "请勿反馈相关问题": "Please DO NOT report related issues",
+    "播放 GIF 动图动画": "Play animated GIFs",
+    "关闭时只显示首帧, 可避免大图/动图持续解码导致卡顿": "When off, only the first frame is shown; avoids jank caused by continuous decoding of large/animated images"
   }
 }

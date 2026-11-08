@@ -249,6 +249,7 @@ class ComicReadingPageLogic extends StateController {
     }
     order += 1;
     urls = [];
+    requestedLoadingItems = [];
     isLoading = true;
     tools = false;
     index = 1;
@@ -260,6 +261,7 @@ class ComicReadingPageLogic extends StateController {
   void jumpToChapter(int index){
     order = index;
     urls = [];
+    requestedLoadingItems = [];
     isLoading = true;
     tools = false;
     this.index = 1;
@@ -283,6 +285,7 @@ class ComicReadingPageLogic extends StateController {
 
     order -= 1;
     urls = [];
+    requestedLoadingItems = [];
     isLoading = true;
     tools = false;
     pageController = PageController(initialPage: 1);
@@ -326,6 +329,7 @@ class ComicReadingPageLogic extends StateController {
     showFloatingButtonValue = 0;
     index = 1;
     urls.clear();
+    requestedLoadingItems = [];
     isLoading = true;
     tools = false;
     showSettings = false;

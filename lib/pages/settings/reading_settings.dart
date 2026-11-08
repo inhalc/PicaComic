@@ -133,6 +133,12 @@ class _ReadingSettingsState extends State<ReadingSettings> {
           },
         ),
         SwitchSetting(
+          title: "播放 GIF 动图动画".tl,
+          subTitle: "关闭时只显示首帧, 可避免大图/动图持续解码导致卡顿".tl,
+          settingsIndex: 90,
+          icon: const Icon(Icons.animation),
+        ),
+        SwitchSetting(
           title: "双击缩放".tl,
           settingsIndex: 49,
           icon: const Icon(Icons.zoom_out_map),

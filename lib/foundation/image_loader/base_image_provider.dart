@@ -1,4 +1,5 @@
-import 'dart:async' show Future, StreamController, scheduleMicrotask;
+import 'dart:async' show Future, StreamController, StreamSubscription,
+    scheduleMicrotask;
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:ui' as ui show Codec;
@@ -8,6 +9,65 @@ import 'package:flutter/material.dart';
 import 'package:pica_comic/foundation/cache_manager.dart';
 import 'package:pica_comic/foundation/image_manager.dart';
 
+/// Controls how animated images are decoded.
+///
+/// Flutter's [MultiFrameImageStreamCompleter] keeps the native codec alive,
+/// decodes every frame of a GIF at full resolution and emits a new frame on
+/// each scheduler tick. In a comic reader every frame causes a rebuild/repaint
+/// of the whole zoomable page, and the codec is never explicitly disposed.
+/// The reader turns this off so GIFs are rendered as a static first frame.
+class ImageDecodeConfig {
+  static bool playAnimation = true;
+}
+
+/// An [ImageStreamCompleter] which decodes exactly one frame, forwards loading
+/// progress, and disposes the native codec as soon as it is done.
+class SingleFrameImageStreamCompleter extends ImageStreamCompleter {
+  SingleFrameImageStreamCompleter(
+    Future<ui.Codec> codec, {
+    Stream<ImageChunkEvent>? chunkEvents,
+    this.informationCollector,
+    double scale = 1.0,
+  }) {
+    if (chunkEvents != null) {
+      _chunkSubscription = chunkEvents.listen(
+        reportImageChunkEvent,
+        onError: (Object error, StackTrace stack) {
+          reportError(exception: error, stack: stack, silent: true);
+        },
+      );
+    }
+    _decode(codec, scale);
+  }
+
+  final InformationCollector? informationCollector;
+
+  StreamSubscription<ImageChunkEvent>? _chunkSubscription;
+
+  void _decode(Future<ui.Codec> codecFuture, double scale) async {
+    ui.Codec? codec;
+    try {
+      codec = await codecFuture;
+      final frame = await codec.getNextFrame();
+      // The frame's own handle is owned by the codec; clone before disposing.
+      final image = frame.image.clone();
+      frame.image.dispose();
+      setImage(ImageInfo(image: image, scale: scale));
+    } catch (e, s) {
+      reportError(
+        exception: e,
+        stack: s,
+        informationCollector: informationCollector,
+        silent: true,
+      );
+    } finally {
+      codec?.dispose();
+      _chunkSubscription?.cancel();
+      _chunkSubscription = null;
+    }
+  }
+}
+
 abstract class BaseImageProvider<T extends BaseImageProvider<T>>
     extends ImageProvider<T> {
   const BaseImageProvider();
@@ -15,17 +75,26 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
   @override
   ImageStreamCompleter loadImage(T key, ImageDecoderCallback decode) {
     final chunkEvents = StreamController<ImageChunkEvent>();
+    final codec = _loadBufferAsync(key, chunkEvents, decode);
+    InformationCollector collector = () sync* {
+      yield DiagnosticsProperty<ImageProvider>(
+        'Image provider: $this \n Image key: $key',
+        this,
+        style: DiagnosticsTreeStyle.errorProperty,
+      );
+    };
+    if (!ImageDecodeConfig.playAnimation) {
+      return SingleFrameImageStreamCompleter(
+        codec,
+        chunkEvents: chunkEvents.stream,
+        informationCollector: collector,
+      );
+    }
     return MultiFrameImageStreamCompleter(
-      codec: _loadBufferAsync(key, chunkEvents, decode),
+      codec: codec,
       chunkEvents: chunkEvents.stream,
       scale: 1.0,
-      informationCollector: () sync* {
-        yield DiagnosticsProperty<ImageProvider>(
-          'Image provider: $this \n Image key: $key',
-          this,
-          style: DiagnosticsTreeStyle.errorProperty,
-        );
-      },
+      informationCollector: collector,
     );
   }
 
@@ -47,13 +116,19 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
 
       while (data == null && !stop) {
         try {
-          if(_cache.containsKey(key.key)){
-            data = _cache[key.key];
+          if (_cache.containsKey(key.key)) {
+            // Re-insert to mark the entry as recently used (LinkedHashMap).
+            final cached = _cache.remove(key.key)!;
+            _cache[key.key] = cached;
+            data = cached;
           } else {
-            data = await load(chunkEvents);
+            final bytes = await load(chunkEvents);
+            _cache[key.key] = bytes;
+            _cacheSize += bytes.length;
+            // Evict *after* inserting, otherwise the cache grows past the
+            // limit by one (potentially very large GIF) on every load.
             _checkCacheSize();
-            _cache[key.key] = data;
-            _cacheSize += data.length;
+            data = bytes;
           }
         } catch (e) {
           if(e.toString().contains("Maximum image loading limit reached")) {

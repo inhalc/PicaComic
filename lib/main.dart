@@ -149,7 +149,14 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     if (appdata.settings[12] == "1") {
       blockScreenshot();
     }
-    PaintingBinding.instance.imageCache.maximumSizeBytes = 200 * 1024 * 1024;
+    // Decoded images live in the process-wide ImageCache until they are
+    // evicted. 200MB of full-resolution comic pages (and animated GIF codecs)
+    // keeps native/GPU memory pinned for the whole app lifetime and causes
+    // sustained jank and OOM kills on Android. Keep the baseline small; the
+    // reader temporarily raises it while it is on screen.
+    final imageCache = PaintingBinding.instance.imageCache;
+    imageCache.maximumSize = 100;
+    imageCache.maximumSizeBytes = 64 * 1024 * 1024;
     super.initState();
   }
 

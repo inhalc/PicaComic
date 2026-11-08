@@ -437,24 +437,41 @@ extension ImageExt on ComicReadingPage {
   /// preload image
   void precacheComicImage(ComicReadingPageLogic logic, BuildContext context,
       int index, String target) {
-    if (logic.requestedLoadingItems.length != logic.length) {
-      logic.requestedLoadingItems = List.filled(logic.length + 1, false);
+    if (index < 0) {
+      index = 0;
+    }
+    // The list has one extra slot (index 0 is a blank page), so its length is
+    // `logic.length + 1`. Comparing against `logic.length` used to recreate
+    // the list on every build, and the "already requested" flags were never
+    // set. As a result every rebuild re-issued precacheImage() for the same
+    // pages, piling up decodes/downloads and making long reading sessions
+    // progressively slower until the UI froze.
+    if (logic.requestedLoadingItems.length != logic.length + 1) {
+      logic.requestedLoadingItems = List<bool>.filled(logic.length + 1, false);
     }
     int precacheNum = int.parse(appdata.settings[28]) + index;
-    for (; index < precacheNum; index++) {
-      if (index >= logic.urls.length || logic.requestedLoadingItems[index]) {
-        return;
-      }
-      precacheImage(createImageProvider(type, logic, index, target), context);
-    }
     if (!ImageManager.haveTask) {
       precacheNum += 3;
-      for (; index < precacheNum; index++) {
-        if (index >= logic.urls.length || logic.requestedLoadingItems[index]) {
-          return;
-        }
-        precacheImage(createImageProvider(type, logic, index, target), context);
+    }
+    for (; index < precacheNum; index++) {
+      if (index >= logic.urls.length) {
+        return;
       }
+      if (logic.requestedLoadingItems[index]) {
+        continue;
+      }
+      final page = index;
+      logic.requestedLoadingItems[page] = true;
+      precacheImage(
+        createImageProvider(type, logic, page, target),
+        context,
+        onError: (Object error, StackTrace? stack) {
+          // Allow a later retry instead of leaving the page permanently blank.
+          if (page < logic.requestedLoadingItems.length) {
+            logic.requestedLoadingItems[page] = false;
+          }
+        },
+      );
     }
   }
 }
