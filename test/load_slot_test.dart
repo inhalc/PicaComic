@@ -149,4 +149,113 @@ void main() {
     expect(limiter.running, 1);
     next.release();
   });
+
+  group('speculation lane', () {
+    test('only one speculative page downloads at a time', () async {
+      final limiter = LoadSlotLimiter(
+        maxConcurrent: 4,
+        waitTime: const Duration(seconds: 30),
+        lease: Duration.zero,
+        // Isolate the lane itself: the "wait for the visible pages" rule is
+        // covered by the next test.
+        holdSpeculationWhileUrgent: false,
+      );
+
+      // Building a continuous reader resolves the visible page, its
+      // neighbour, and every page the list keeps around. Without the lane all
+      // of them start at once and the page on screen is the last to finish.
+      final screen = await limiter.acquire(priority: () => 100);
+      final neighbour = await limiter.acquire(priority: () => 80);
+      final prefetched = await limiter.acquire(priority: () => 20);
+      expect(limiter.speculativeRunning, 1);
+
+      var secondStarted = false;
+      final pending = limiter.acquire(priority: () => 20).then((slot) {
+        secondStarted = true;
+        return slot;
+      });
+
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(secondStarted, isFalse,
+          reason: 'two slots are free, but speculation has one lane');
+
+      prefetched.release();
+      final second = await pending;
+      expect(secondStarted, isTrue);
+
+      second.release();
+      neighbour.release();
+      screen.release();
+      expect(limiter.running, 0);
+      expect(limiter.speculativeRunning, 0);
+    });
+
+    test('speculation waits until the visible pages are downloaded', () async {
+      final limiter = LoadSlotLimiter(
+        maxConcurrent: 4,
+        waitTime: const Duration(seconds: 30),
+        lease: Duration.zero,
+        pollInterval: const Duration(milliseconds: 10),
+      );
+
+      // Page 1 on screen, page 2 next to it, page 3 merely guessed.
+      final screen = await limiter.acquire(priority: () => 100);
+      final neighbour = await limiter.acquire(priority: () => 80);
+
+      var thirdStarted = false;
+      final third = limiter.acquire(priority: () => 20).then((slot) {
+        thirdStarted = true;
+        return slot;
+      });
+
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(thirdStarted, isFalse,
+          reason: 'a free slot must not be spent on page 3 while page 1 '
+              'is still arriving - that is what made later pages finish '
+              'first');
+
+      screen.release();
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(thirdStarted, isFalse,
+          reason: 'page 2 is still downloading');
+
+      neighbour.release();
+      final slot = await third;
+      expect(thirdStarted, isTrue);
+      slot.release();
+      expect(limiter.running, 0);
+    });
+
+    test('a page that becomes current leaves the lane immediately', () async {
+      final limiter = LoadSlotLimiter(
+        maxConcurrent: 4,
+        waitTime: const Duration(seconds: 30),
+        lease: Duration.zero,
+        pollInterval: const Duration(milliseconds: 10),
+      );
+
+      final screen = await limiter.acquire(priority: () => 100);
+      screen.release();
+      final prefetched = await limiter.acquire(priority: () => 20);
+
+      // Queued as a guess, then the reader jumps to it.
+      var priority = 20;
+      var started = false;
+      final queued = limiter.acquire(priority: () => priority).then((slot) {
+        started = true;
+        return slot;
+      });
+
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      expect(started, isFalse, reason: 'the single lane is occupied');
+
+      priority = 100;
+      final slot = await queued;
+      expect(started, isTrue,
+          reason: 'a page on screen is not speculative any more');
+
+      slot.release();
+      prefetched.release();
+    });
+  });
 }

@@ -5,9 +5,13 @@ import 'dart:async';
 /// [release] is idempotent: the lease timer and the owner may both try to
 /// release the same slot without corrupting the counter.
 class LoadSlot {
-  LoadSlot._(this._onRelease);
+  LoadSlot._(this._onRelease, this.speculative);
 
   final void Function(LoadSlot slot) _onRelease;
+
+  /// Whether this slot was handed to a speculative load, so releasing it
+  /// frees the speculation lane as well.
+  final bool speculative;
 
   Timer? _leaseTimer;
 
@@ -61,13 +65,48 @@ class LoadSlotLimiter {
     this.waitTime = const Duration(seconds: 8),
     this.lease = const Duration(seconds: 45),
     this.pollInterval = const Duration(milliseconds: 25),
+    this.speculativeBelow = 80,
+    this.maxSpeculative = 1,
+    this.holdSpeculationWhileUrgent = true,
     this.onSoftLimit,
   });
 
   /// How many loads may run at once.
   final int maxConcurrent;
 
+  /// Loads that report a priority below this are speculative: the reader is
+  /// only guessing that the user will look at them next.
+  ///
+  /// Loads without a priority callback (covers, thumbnails, avatars) are never
+  /// treated as speculative, so grids keep their usual parallelism.
+  final int speculativeBelow;
+
+  /// How many speculative loads may run at the same time.
+  ///
+  /// Building a page in a continuous reader resolves every child that the
+  /// list keeps around, so seven pages used to enter the pool in one frame and
+  /// split the link seven ways. The page on screen then finished *last*,
+  /// because the smaller neighbours were done first. Giving speculation a
+  /// single lane leaves the rest of the pool to the pages the reader reports
+  /// as current or adjacent.
+  final int maxSpeculative;
+
+  /// Keep the speculation lane closed while a page the reader asks for is
+  /// still downloading.
+  ///
+  /// Without this, page 3 of a gallery starts together with pages 1 and 2, and
+  /// being a small still image it finishes first: the user stares at "3 is
+  /// here, 1 and 2 are at 20 %" and the pages arrive out of order. Holding
+  /// speculation until the visible pages are done makes the window fill in
+  /// reading order. The wait is bounded by the running loads themselves: a
+  /// speculative request never bypasses the cap.
+  final bool holdSpeculationWhileUrgent;
+
   /// Longest time a caller waits for a free slot before ignoring the cap.
+  ///
+  /// Applies to loads the reader asked for. Speculative loads never bypass the
+  /// cap: they are guesses, and overshooting [maxConcurrent] is what the cap
+  /// exists to prevent.
   final Duration waitTime;
 
   /// How long a slot may be held before it is reclaimed automatically.
@@ -87,15 +126,21 @@ class LoadSlotLimiter {
 
   int _running = 0;
 
+  int _speculativeRunning = 0;
+
   /// Number of slots currently held (including leaked ones not yet reclaimed
   /// by their lease).
   int get running => _running;
+
+  /// Speculative loads currently holding a slot. Exposed for tests.
+  int get speculativeRunning => _speculativeRunning;
 
   final List<_LoadWaiter> _waiters = [];
 
   Timer? _ticker;
 
-  /// Acquire a slot. Never waits longer than [waitTime].
+  /// Acquire a slot. A load the reader asked for never waits longer than
+  /// [waitTime]; a speculative one waits until the pool has room for it.
   ///
   /// [priority] is evaluated repeatedly while waiting: the highest priority
   /// waiter is served first, and a negative value aborts the wait with
@@ -105,12 +150,19 @@ class LoadSlotLimiter {
     if (current < 0) {
       return Future.error(const LoadSlotSkipped());
     }
-    if (_waiters.isEmpty && _running < maxConcurrent) {
-      return Future.value(_grant());
+    final speculative = priority != null && current < speculativeBelow;
+    // The fast path must apply the same two rules as the queue, otherwise a
+    // page that arrives while the pool is empty slips past the lane.
+    final blocked = speculative &&
+        (_speculativeRunning >= maxSpeculative ||
+            (holdSpeculationWhileUrgent && _running > _speculativeRunning));
+    if (_waiters.isEmpty && _running < maxConcurrent && !blocked) {
+      return Future.value(_grant(speculative));
     }
     final waiter = _LoadWaiter(
       priority,
       DateTime.now().add(waitTime),
+      speculativeBelow,
     );
     _waiters.add(waiter);
     _startTicker();
@@ -118,9 +170,12 @@ class LoadSlotLimiter {
     return waiter.completer.future;
   }
 
-  LoadSlot _grant() {
+  LoadSlot _grant(bool speculative) {
     _running++;
-    final slot = LoadSlot._(_release);
+    if (speculative) {
+      _speculativeRunning++;
+    }
+    final slot = LoadSlot._(_release, speculative);
     if (lease > Duration.zero) {
       slot._leaseTimer = Timer(lease, slot.release);
     }
@@ -131,7 +186,20 @@ class LoadSlotLimiter {
     if (_running > 0) {
       _running--;
     }
+    if (slot.speculative && _speculativeRunning > 0) {
+      _speculativeRunning--;
+    }
     _pump();
+  }
+
+  /// A speculative waiter waits while the speculation lane is occupied, and
+  /// while any page the reader explicitly asked for is still downloading. Its
+  /// priority is re-read every time, so a page that becomes current leaves the
+  /// lane and is served normally.
+  bool _blocked(_LoadWaiter waiter) {
+    if (!waiter.isSpeculative) return false;
+    if (_speculativeRunning >= maxSpeculative) return true;
+    return holdSpeculationWhileUrgent && _running > _speculativeRunning;
   }
 
   void _startTicker() {
@@ -164,8 +232,10 @@ class LoadSlotLimiter {
 
     while (_running < maxConcurrent && _waiters.isNotEmpty) {
       _waiters.sort((a, b) => b.currentPriority.compareTo(a.currentPriority));
-      final waiter = _waiters.removeAt(0);
-      waiter.completer.complete(_grant());
+      final index = _waiters.indexWhere((waiter) => !_blocked(waiter));
+      if (index < 0) break;
+      final waiter = _waiters.removeAt(index);
+      waiter.completer.complete(_grant(waiter.isSpeculative));
     }
 
     // Bounded wait: a stalled download must not block the pool forever.
@@ -176,9 +246,14 @@ class LoadSlotLimiter {
         continue;
       }
       if (now.isAfter(waiter.deadline)) {
+        // Only a load the reader asked for may bypass the cap. Letting a
+        // guess through would mean running more than [maxConcurrent]
+        // downloads, which is exactly what the cap exists to prevent - and a
+        // guess can simply keep waiting for a slot to free up.
+        if (waiter.isSpeculative) continue;
         _waiters.remove(waiter);
         onSoftLimit?.call(_running + 1);
-        waiter.completer.complete(_grant());
+        waiter.completer.complete(_grant(false));
       }
     }
 
@@ -189,12 +264,18 @@ class LoadSlotLimiter {
 }
 
 class _LoadWaiter {
-  _LoadWaiter(this.priority, this.deadline);
+  _LoadWaiter(this.priority, this.deadline, this.speculativeBelow);
 
   final int Function()? priority;
   final DateTime deadline;
+  final int speculativeBelow;
   final Completer<LoadSlot> completer = Completer<LoadSlot>();
 
   int get currentPriority =>
       priority?.call() ?? LoadSlotLimiter.defaultPriority;
+
+  /// Recomputed on every check: a page that becomes current stops being
+  /// speculative and no longer waits for the speculation lane.
+  bool get isSpeculative =>
+      priority != null && currentPriority < speculativeBelow;
 }

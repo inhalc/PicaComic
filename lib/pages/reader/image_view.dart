@@ -32,6 +32,14 @@ extension ImageExt on ComicReadingPage {
         itemScrollController: logic.itemScrollController,
         itemPositionsListener: logic.itemScrollListener,
         itemCount: logic.urls.length,
+        // Start where the reader was, instead of building item 0 and jumping.
+        // The jump used to run one frame later, and in that frame the list
+        // reported page 1 as the visible page: the reader downloaded the first
+        // page of the gallery even when it opened at page 55, and that download
+        // took the download slot away from the page the user was waiting for.
+        initialScrollIndex: logic.urls.isEmpty
+            ? 0
+            : (logic.index - 1).clamp(0, logic.urls.length - 1),
         addSemanticIndexes: false,
         scrollController: logic.scrollController,
         scrollBehavior: const MaterialScrollBehavior()
@@ -51,9 +59,14 @@ extension ImageExt on ComicReadingPage {
 
           ImageProvider image = createImageProvider(type, logic, index, target);
           return ComicImage(
+            // Page identity, not list position. The list already keys its
+            // children by index; keeping the key here as well means a page can
+            // never inherit the state (and the bitmap) of another page.
+            key: ValueKey(index),
             filterQuality: FilterQuality.medium,
             image: image,
             refreshOn: logic.anchorRevision,
+            priorityOf: () => logic.loadPriorityForPage(index + 1),
             width: imageWidth,
             height: imageWidth * 1.2,
             fit: BoxFit.cover,
@@ -200,6 +213,7 @@ extension ImageExt on ComicReadingPage {
         image: createImageProvider(
             type, logic, imageIndex, target),
         refreshOn: logic.anchorRevision,
+        priorityOf: () => logic.loadPriorityForPage(imageIndex + 1),
         fit: fit,
         alignment: alignment,
       );

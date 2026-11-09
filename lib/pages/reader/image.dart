@@ -22,6 +22,7 @@ class ComicImage extends StatefulWidget {
         this.filterQuality = FilterQuality.medium,
         this.isAntiAlias = false,
         this.refreshOn,
+        this.priorityOf,
         Map<String, String>? headers,
         int? cacheWidth,
         int? cacheHeight,
@@ -69,6 +70,15 @@ class ComicImage extends StatefulWidget {
   /// timer fires. Listening lets it retry as soon as it is the page in front
   /// of the user.
   final Listenable? refreshOn;
+
+  /// Live download priority of this page, or null when the caller has no
+  /// policy (the widget is used outside the reader).
+  ///
+  /// Negative means the reader has moved away from this page. Such a page
+  /// must not keep retrying: every retry would be rejected before it reaches
+  /// the network, which is exactly what made an interrupted page sit at 0 %
+  /// forever. It starts again through [refreshOn] once it is wanted.
+  final int Function()? priorityOf;
 
   static void clear() => _ComicImageState.clear();
 
@@ -157,6 +167,11 @@ class _ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
   /// in-flight load, so a healthy page pays nothing for being nudged.
   void _onRefreshRequested() {
     if (!mounted || _imageInfo != null || _lastException != null) return;
+    // Pages the reader has left behind are not woken up: resolving one of
+    // those would create a download that is rejected on the spot, and the
+    // rejected stream is thrown away again. Their turn comes when they are
+    // inside the window, and that page turn notifies us once more.
+    if ((widget.priorityOf?.call() ?? 0) < 0) return;
     _resolveImage();
   }
 
@@ -205,8 +220,12 @@ class _ComicImageState extends State<ComicImage> with WidgetsBindingObserver {
     _stallTimer?.cancel();
     _stallTimer = null;
     if (!mounted || _imageInfo != null || _lastException != null) return;
+    // A page the reader has left behind is not retried on a timer: the retry
+    // would be dropped immediately and only reset the progress bar to 0 %.
+    if ((widget.priorityOf?.call() ?? 0) < 0) return;
     _stallTimer = Timer(const Duration(milliseconds: 2500), () {
       if (!mounted || _imageInfo != null || _lastException != null) return;
+      if ((widget.priorityOf?.call() ?? 0) < 0) return;
       _resolveImage();
     });
   }

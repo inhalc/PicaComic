@@ -22,6 +22,11 @@ class _WelcomePageState extends State<WelcomePage> {
 
   int page = 0;
 
+  /// Guards the "完成" button: its handler awaits a disk write and a comic
+  /// source reload, and a second tap inside that window would push a second
+  /// MainPage on top of the first one.
+  bool finishing = false;
+
   @override
   Widget build(BuildContext context) {
     return Material(
@@ -113,9 +118,24 @@ mixin class _WelcomePageComponents {
           Button.filled(
               padding: const EdgeInsets.fromLTRB(24, 6, 12, 6),
               onPressed: () async {
-                await ComicSource.reload();
-                if (context.mounted) {
-                  context.to(() => const MainPage());
+                if (state.finishing) return;
+                state.finishing = true;
+                try {
+                  // Persist the decision before leaving the wizard. MainPage
+                  // also writes it on init, but that write is not awaited: a
+                  // force-stop right after setup used to lose it and show the
+                  // wizard a second time.
+                  appdata.firstUse[3] = "1";
+                  appdata.welcomeCompleted = true;
+                  try {
+                    await appdata.writeData(false);
+                  } catch (_) {}
+                  await ComicSource.reload();
+                  if (context.mounted) {
+                    context.to(() => const MainPage());
+                  }
+                } finally {
+                  state.finishing = false;
                 }
               },
               disabled: !canNext,

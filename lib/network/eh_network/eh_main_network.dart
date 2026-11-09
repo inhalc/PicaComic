@@ -1,4 +1,3 @@
-import 'dart:collection';
 import 'dart:convert';
 
 import 'package:cookie_jar/cookie_jar.dart';
@@ -15,6 +14,7 @@ import 'package:pica_comic/network/eh_network/eh_models.dart';
 import 'package:pica_comic/network/eh_network/get_gallery_id.dart';
 import 'package:pica_comic/network/res.dart';
 import 'package:pica_comic/pages/pre_search_page.dart';
+import 'package:pica_comic/tools/eh_keyword.dart';
 import 'package:pica_comic/tools/extensions.dart';
 import 'package:pica_comic/tools/issue_parsers.dart';
 import 'package:pica_comic/tools/js.dart';
@@ -875,40 +875,6 @@ class EhNetwork {
     );
   }
 
-  List<String> _splitKeyword(String keyword) {
-    var res = <String>[];
-    var buffer = StringBuffer();
-    var qs = Queue<String>();
-    for(int i = 0; i<keyword.length; i++) {
-      var char = keyword[i];
-      if(char == '"' || char == "'") {
-        if(qs.isEmpty) {
-          qs.add(char);
-        } else {
-          if(qs.first == char) {
-            qs.removeFirst();
-          } else {
-            qs.add(char);
-          }
-        }
-      }
-      if(char == ' ') {
-        if(qs.isEmpty) {
-          res.add(buffer.toString());
-          buffer.clear();
-        } else {
-          buffer.write(char);
-        }
-      } else {
-        buffer.write(char);
-      }
-    }
-    if(buffer.isNotEmpty) {
-      res.add(buffer.toString());
-    }
-    return res;
-  }
-
   ///搜索e-hentai
   Future<Res<Galleries>> search(String keyword,
       {int? fCats, int? startPages, int? endPages, int? minStars, int? expunged}) async {
@@ -917,30 +883,7 @@ class EhNetwork {
       appdata.searchHistory.add(keyword);
       appdata.writeHistory();
     }
-    keyword = keyword.replaceAll(RegExp(r"\s+"), " ").trim();
-    if(keyword.contains(" | ")) {
-      var keywords = _splitKeyword(keyword);
-      var newKeywords = <String>[];
-      for(var k in keywords) {
-        if(!k.contains(' | '))  {
-          newKeywords.add(k);
-        } else {
-          var lr = k.split(':');
-          if(lr.length != 2
-              && !((lr[1].startsWith('"') && lr[1].endsWith('"'))
-              || (lr[1].startsWith("'") && lr[1].endsWith("'")))
-          ) {
-            newKeywords.add(k);
-          } else {
-            var key = lr[0];
-            var value = lr[1].substring(1, lr[1].length-1);
-            value = '${value.split(' | ').first}\$';
-            newKeywords.add('$key:"$value"');
-          }
-        }
-      }
-      keyword = newKeywords.join(' ');
-    }
+    keyword = normalizeEhOrKeyword(keyword);
     var requestUrl = "$ehBaseUrl/?f_search=$keyword";
     if (fCats != null) {
       requestUrl += "&f_cats=$fCats";

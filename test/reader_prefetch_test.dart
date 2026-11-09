@@ -304,4 +304,42 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(milliseconds: 100));
   });
+
+  testWidgets('a page the reader left behind is not woken up', (tester) async {
+    final provider = _CountingProvider();
+    final anchorRevision = ValueNotifier<int>(0);
+    addTearDown(anchorRevision.dispose);
+    var priority = ImageLoadPriority.skip;
+
+    await tester.pumpWidget(MaterialApp(
+      home: Center(
+        child: ComicImage(
+          image: provider,
+          refreshOn: anchorRevision,
+          priorityOf: () => priority,
+        ),
+      ),
+    ));
+    await tester.pump();
+    expect(provider.loadCount, 1, reason: 'the first resolve still happens');
+
+    // Every page turn used to wake every built page, including the ones the
+    // reader has scrolled past. Their retry is rejected before reaching the
+    // network and only resets the progress bar, so they must stay asleep.
+    imageCache.evict(provider);
+    anchorRevision.value++;
+    await tester.pump();
+    expect(provider.loadCount, 1,
+        reason: 'a skipped page must not start another download');
+
+    // The user scrolls back: now it is the page in front of them.
+    priority = ImageLoadPriority.current;
+    anchorRevision.value++;
+    await tester.pump();
+    expect(provider.loadCount, 2,
+        reason: 'the page loads again once it is wanted');
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(milliseconds: 100));
+  });
 }

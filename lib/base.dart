@@ -291,38 +291,24 @@ class Appdata {
     readImplicitData();
 
     bool? storedFlag;
-    bool hasStoredSettings = false;
-    bool hasSettingsFile = false;
     try {
       storedFlag = s.getBool(welcomeCompletedKey);
-      hasStoredSettings = s.getStringList("settings") != null;
-      hasSettingsFile = File("${App.dataPath}/settings").existsSync();
     } catch (e) {
       LogManager.addLog(
           LogLevel.error, "Appdata", "read onboarding flag failed: $e");
     }
     welcomeCompleted = storedFlag ?? false;
-    if (!welcomeCompleted && firstUse[3] == "1") {
-      // Migrate installs that predate the independent flag.
+    if (storedFlag == null && firstUse[3] == "1") {
+      // Installs that predate the independent flag only have firstUse[3].
       welcomeCompleted = true;
     }
-    if (!welcomeCompleted &&
-        storedFlag == null &&
-        (hasStoredSettings || hasSettingsFile)) {
-      // The onboarding flag was lost (e.g. an interrupted import), but this
-      // device clearly already has user data. Do not send a returning user
-      // through the first-run wizard again. clearAppdata() removes both the
-      // settings file and SharedPreferences, so "delete all data" still
-      // shows the welcome page.
-      welcomeCompleted = true;
-      firstUse[3] = "1";
-      LogManager.addLog(LogLevel.info, "Appdata",
-          "recovered onboarding flag from existing user data");
-      try {
-        await s.setBool(welcomeCompletedKey, true);
-        await s.setStringList("firstUse", firstUse);
-      } catch (_) {}
-    }
+    // Do NOT treat "a settings file exists" as proof of a finished setup: the
+    // wizard itself writes settings (theme, dark mode, reading settings), so a
+    // user who quits it half way would never see it again. A missing flag now
+    // really means "not finished" - the import path persists the flag itself
+    // and never clears it, which is what the old heuristic was papering over.
+    LogManager.addLog(LogLevel.info, "Appdata",
+        "onboarding: stored=$storedFlag legacyFirstUse=${firstUse[3]}");
     return welcomeCompleted || firstUse[3] == "1";
   }
 
