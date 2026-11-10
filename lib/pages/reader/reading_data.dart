@@ -154,7 +154,10 @@ class EhReadingData extends ReadingData {
   String get title => gallery.title;
 
   @override
-  String buildImageKey(int ep, int page, String url) => "${gallery.link}$page";
+  // [page] is 0-based here, while the download cache (and the reader link) is
+  // 1-based. Using the raw index made page N read page N-1's cached file.
+  String buildImageKey(int ep, int page, String url) =>
+      ehPageCacheKey(gallery.link, page + 1);
 
   @override
   FavoriteType get favoriteType => FavoriteType.ehentai;
@@ -397,8 +400,11 @@ class CustomReadingData extends ReadingData{
   ComicType get type => ComicType.other;
 
   @override
+  // Must stay identical to the key `ImageManager.getCustomImage` writes, which
+  // falls back to [id] when the source has no chapters. Forcing [eps] here
+  // crashed the whole reader for single-chapter custom comics.
   String buildImageKey(int ep, int page, String url) =>
-      "$sourceKey$id${eps!.keys.elementAtOrNull(ep-1) ?? id}$url";
+      "$sourceKey$id${eps?.keys.elementAtOrNull(ep-1) ?? id}$url";
 
   @override
   FavoriteType get favoriteType => FavoriteType(source!.intKey);

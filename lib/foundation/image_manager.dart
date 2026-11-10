@@ -16,6 +16,7 @@ import 'package:pica_comic/network/cookie_jar.dart';
 import 'package:pica_comic/network/eh_network/eh_models.dart';
 import 'package:pica_comic/network/eh_network/get_gallery_id.dart';
 import 'package:pica_comic/network/hitomi_network/hitomi_models.dart';
+import 'package:pica_comic/tools/eh_image_key.dart';
 import 'package:pica_comic/tools/extensions.dart';
 import 'package:pica_comic/tools/file_type.dart';
 import 'package:pica_comic/tools/image_integrity.dart';
@@ -189,7 +190,7 @@ class ImageManager {
   Stream<DownloadProgress> getEhImageNew(
       final Gallery gallery, final int page) async* {
     final galleryLink = gallery.link;
-    final cacheKey = "$galleryLink$page";
+    final cacheKey = ehPageCacheKey(galleryLink, page);
     final gid = getGalleryId(galleryLink);
 
     // check whether this image is loading

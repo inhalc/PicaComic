@@ -40,6 +40,7 @@ import '../../foundation/ui_mode.dart';
 import '../../network/hitomi_network/hitomi_models.dart';
 import '../../tools/key_down_event.dart';
 import 'package:pica_comic/network/picacg_network/methods.dart';
+import 'package:pica_comic/tools/eh_image_key.dart';
 import 'package:pica_comic/tools/translations.dart';
 
 import '../jm/jm_comments_page.dart';
